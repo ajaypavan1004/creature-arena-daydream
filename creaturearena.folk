@@ -79,6 +79,7 @@ set ARENA_SETTINGS {
     switchReach 0.04 dwellFlip 0.6 readyHold 1.0 readyReach 0.07
     textHeight 0.022
     spriteHeight 205 bobHeight 9 lean 0.1 lungeLean 0.24 hitFlash 0.16
+    picturesFromEnds 0
 }
 # Layers: games draw at 90-98, under the tag masks (100).
 set ARENA_LAYERS {ca-sprite 90.5 fillTriangle 91 games-beam 92 games-dot 94}
@@ -455,6 +456,7 @@ $cc code {
 
     typedef struct {
         SpVec2 centre, mid[3], in[3], right[3];
+        SpVec2 up, rt;            /* the pictures' up and right: for the people at the bottom long edge */
         double R, k, halfEdge;    /* arena radius (m), m per world unit, half the short edge */
     } CaLayout;
 
@@ -477,6 +479,13 @@ $cc code {
         L->R = fmin(L->halfEdge * 0.92, halfLong - 0.30);
         if (L->R < 0.12) { L->R = fmin(L->halfEdge * 0.92, halfLong * 0.6); }
         L->k = L->R / 520.0;
+        /* Players stand along the bottom long edge (Adrian, 2026-10-30):
+         * the pictures stand upright for them, up being away from the
+         * bottom edge (table y grows towards it). */
+        SpVec2 axis = gm_unit(sp_sub2(L->mid[2], L->mid[1]), sp_v2(1, 0));
+        L->up = sp_v2(-axis.y, axis.x);
+        if (L->up.y > 0) { L->up = sp_scale2(L->up, -1); }
+        L->rt = sp_v2(-L->up.y, L->up.x);
         return 1;
     }
     static SpVec2 ca_world_to_table(const CaLayout* L, double x, double y) {
@@ -519,6 +528,12 @@ $cc code {
     }
 
     /* -------------------------------------------------------- drawing */
+
+    /* Which way is up for player p's pictures: the bottom edge's up,
+     * or (picturesFromEnds 1) upright for that player at their end. */
+    static int ca_from_ends = 0;
+    static SpVec2 ca_pic_up(const CaLayout* L, int p) { return ca_from_ends ? L->in[p] : L->up; }
+    static SpVec2 ca_pic_right(const CaLayout* L, int p) { return ca_from_ends ? L->right[p] : L->rt; }
 
     static SpVec2 ca_rot(SpVec2 v, double a) { return sp_v2(v.x * cos(a) - v.y * sin(a), v.x * sin(a) + v.y * cos(a)); }
 
@@ -704,12 +719,14 @@ $cc proc configure {Jim_Obj* settings} void {
     SET(spriteHeight); SET(bobHeight); SET(lean); SET(lungeLean); SET(hitFlash);
     #undef SET
     c.maxOnField = gm_jim_int(interp, settings, "maxOnField", 3);
+    int fromEnds = gm_jim_int(interp, settings, "picturesFromEnds", 0);
     Jim_Obj* sp = sp_jim_dict_get(interp, settings, "sprintSpeed");
     Jim_Obj* dr = sp_jim_dict_get(interp, settings, "sprintDrain");
     if (!sp || !sp_jim_doubles(interp, sp, c.sprintSpeed, 3)) { FOLK_ERROR("creaturearena: sprintSpeed needs 3 numbers"); }
     if (!dr || !sp_jim_doubles(interp, dr, c.sprintDrain, 3)) { FOLK_ERROR("creaturearena: sprintDrain needs 3 numbers"); }
     pthread_mutex_lock(&lock);
     config = c;
+    ca_from_ends = fromEnds;
     pthread_mutex_unlock(&lock);
 }
 
@@ -982,7 +999,7 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
             float n = (float)g->nightness;
             if (art) {
                 /* The sun by day, the moon by night, upright for the player on that side's left. */
-                SpVec2 up = L.in[k < 0 ? 1 : 2];
+                SpVec2 up = ca_pic_up(&L, k < 0 ? 1 : 2);
                 double size = fmin(0.07, fmax(0.035, L.halfEdge - L.R - 0.01) * 1.6);
                 ca_cell(&canvas, &sprites, CA_CELL_SUN, q, up, size, now * 0.2, 0, 0, 0, 1 - n);
                 ca_cell(&canvas, &sprites, CA_CELL_MOON, q, up, size * 0.85, 0, 0, 0, 0, n);
@@ -1015,8 +1032,10 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                     double breathe = 1 + 0.02 * sin(now * 2.4 + p);
                     const CaCell* k = &CA_CELLS[CA_STILL[idx]];
                     double ph = fmin(H * 1.15, ca_switch_spacing(&L) * 2.0 / fmax(1, k->w / k->h));
-                    ca_cell(&canvas, &sprites, CA_STILL[idx], pv, L.in[p], ph * breathe, 0,
-                            CA_FACES_LEFT[idx] != (p == 2), 0, 0, 1);
+                    /* Each faces the middle of the table. */
+                    int towardsRight = sp_dot2(sp_sub2(L.centre, pv), ca_pic_right(&L, p)) >= 0;
+                    ca_cell(&canvas, &sprites, CA_STILL[idx], pv, ca_pic_up(&L, p), ph * breathe, 0,
+                            towardsRight == CA_FACES_LEFT[idx], 0, 0, 1);
                 } else {
                     ca_draw_creature(&canvas, idx, pv, L.in[p], s, now, 1.0f, dusk);
                 }
@@ -1070,7 +1089,8 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                     int near = sp_dist2(at, L.mid[1]) <= sp_dist2(at, L.mid[2]) ? 1 : 2;
                     double size = 60 * L.k * 1.25 * appear * pop, lift = (26 + sin(now * 3 + i) * 6) * L.k * 0.5;
                     double turn = pu->kind == PU_GREENS ? sin(now * 2) * 0.08 : 0;
-                    ca_cell(&canvas, &sprites, CELL[pu->kind], sp_add2(at, sp_scale2(L.in[near], lift)), L.in[near], size, turn, 0, 0, 0, a);
+                    SpVec2 up = ca_pic_up(&L, near);
+                    ca_cell(&canvas, &sprites, CELL[pu->kind], sp_add2(at, sp_scale2(up, lift)), up, size, turn, 0, 0, 0, a);
                 } else {
                     ca_draw_pickup(&canvas, pu->kind, at, c->pickupRadius * L.k * 0.8, now, a);
                 }
@@ -1088,11 +1108,11 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                 SpVec2 mid = at;
                 if (art) {
                     /* The painting (or its walk cycle) as the browser game
-                     * draws it (render.ts drawFighter): upright for its
-                     * player, feet at the back of its body, facing where it
+                     * draws it (render.ts drawFighter): upright for the
+                     * players at the bottom edge, feet at the back of its body, facing where it
                      * goes, leaning as it runs, hopping, flashing white
                      * when hit, shaded blue at night. */
-                    SpVec2 up = L.in[p], right = L.right[p];
+                    SpVec2 up = ca_pic_up(&L, p), right = ca_pic_right(&L, p);
                     double speed = fmin(1.5, hypot(f->vx, f->vy) / c->maxSpeed);
                     int frames = CA_WALK_FRAMES[idx], cell = CA_STILL[idx], facesLeft = CA_FACES_LEFT[idx];
                     if (frames > 0) {
@@ -1115,7 +1135,7 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                     ca_sprite(&canvas, &sprites, sprites.atlas, centre, up, h * k->w / k->h * 0.5 / squash, h * squash * 0.5, lean,
                               k->u0, k->v0, k->u1, k->v1, (side >= 0) == facesLeft, flash, 0.32f * night, f->hp <= 0 ? 0.75f : 1.0f);
                     mid = sp_add2(feet, sp_scale2(up, h * 0.45 + hop));
-                    /* Whose it is: a short bar of your colour at its feet, across your view. */
+                    /* Whose it is: a short bar of its player's colour at its feet. */
                     gm_beam(&canvas, sp_add2(feet, sp_scale2(right, -s * 0.7)), sp_add2(feet, sp_scale2(right, s * 0.7)),
                             0.004, 0.002, 1.0, gm_alpha(gm_player_color(p), 0.85f * alpha));
                 } else {

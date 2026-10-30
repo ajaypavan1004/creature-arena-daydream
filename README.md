@@ -101,8 +101,9 @@ dream zap         # only to send it to a real table
 
 ## Known limits
 
-- Seen from above, a painting stands upright for its own player, so the other player
-  sees it upside down.
+- The pictures stand upright for people at the table's bottom long edge, where players
+  stand (`picturesFromEnds 1` in the settings turns each upright for its player at the
+  short ends instead). The switches, bars and labels are still at the short ends.
 - The browser game's floating words (BOOST, BITTER!), particles, banners and screen shake
   are not on the table yet; its light effects are RJ's.
 - Two players only, at the short ends. No computer opponent.
