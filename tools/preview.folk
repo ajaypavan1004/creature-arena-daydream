@@ -1,0 +1,73 @@
+# preview.folk -- pictures of the table version, off the table: plays
+# the pick screen and a fight by day and by night on the made-up rig,
+# with stand-in textures, and writes what the game wished drawn at each
+# moment to OUT/NAME/PIPELINE.txt. tools/render-preview.py turns them
+# into PNGs with art/atlas.png and art/floor.png, as the GPU would.
+#
+#     APP_DIR=path/to/app OUT=/tmp/ca-preview ./folk path/to/app/tools/preview.folk
+#     python3 tools/render-preview.py /tmp/ca-preview preview
+#
+# (Run from a daydream (folk) checkout with a built folk, as `dream test`.)
+
+source kits/testing/lib-test.tcl
+source kits/games/test/lib-games-test.tcl
+
+set appDir [expr {[info exists ::env(APP_DIR)] ? $::env(APP_DIR) : "."}]
+set ::out [expr {[info exists ::env(OUT)] ? $::env(OUT) : "/tmp/ca-preview"}]
+loadSpatialPrograms
+loadProgram kits/spatial/hands.folk
+loadProgram kits/games/games.folk
+loadProgram $appDir/creaturearena.folk
+assertRig
+mockFrameClock
+Assert! when {Wish creaturearena is played} with environment [list [list this preview]]
+# Stand-ins for the GPU's textures: 1 is the atlas, 2 the floor.
+Assert! when {Claim the creature arena textures are {1 2}} with environment [list [list this preview-textures]]
+
+set camera $::rigCamera
+set display $::rigDisplay
+set lib [dict get [waitFor {the spatial library is /lib/} 60] lib]
+set map [dict get [waitFor [list the table map from camera $camera to display $display is /map/] 20] map]
+set arena [dict get [waitFor {the creature arena library is /lib/} 30] lib]
+mockCanvas $display
+warmUpHands $lib $map $camera
+
+proc dump {name} {
+    sleep 0.3
+    file mkdir $::out/$name
+    foreach pipeline {ca-sprite fillTriangle games-beam games-dot} {
+        set fd [open $::out/$name/$pipeline.txt w]
+        foreach i [drawnInstances $pipeline] { puts $fd $i }
+        close $fd
+    }
+    set fd [open $::out/$name/labels.txt w]
+    foreach r [Query! the creature arena labels on /d/ are /labels/] { foreach l [dict get $r labels] { puts $fd [string map [list \n {\n}] $l] } }
+    close $fd
+    puts "preview: $name"
+}
+
+waitFor {the creature arena is pick with creatures /c/ winner 0} 10
+$arena setGenes 1 {0 1 0 1 0}
+$arena setGenes 2 {1 0 1 0 2}
+dump pick
+
+$arena startFight
+$arena drop coffee 0 -250
+$arena drop greens 150 200
+$arena drop orb -150 200
+$arena place 1 -220 -40 150
+$arena place 2 210 60 90
+sleep 2.6
+dump fight-day
+
+$arena setGenes 1 {0 0 1 0 0}
+$arena setGenes 2 {1 1 0 1 1}
+$arena startFight
+$arena setNight 1
+$arena drop orb 60 -200
+$arena place 1 -120 120 150
+$arena place 2 150 -80 150
+sleep 2.6
+dump fight-night
+puts "preview: done"
+finish

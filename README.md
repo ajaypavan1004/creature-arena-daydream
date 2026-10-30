@@ -1,8 +1,9 @@
 # Creature Arena on the Daydream table
 
 Creature Arena's fight, moved to Daydream (Adrian Cipriani's projector and camera table,
-built on Folk). Two players stand at the short ends of the table. Their creatures fight in
-a ring of light in the middle, and everything is played with hands. It is a Daydream app
+built on Folk). Two players stand at the short ends of the table. Their creatures, the
+browser game's own paintings and walk cycles, fight on its stone arena in the middle, and
+everything is played with hands. It is a Daydream app
 (`dream new game` layout) for the SDK at UrsprungLabs/daydream-sdk. The browser game it
 comes from is in Genome Wrapped (`games/creature-arena`).
 
@@ -46,8 +47,24 @@ game.
 ## What it's made of
 
 - `creaturearena.folk`: the whole game. The rules are the browser game's (`src/sim.ts`)
-  with the same numbers (`src/config.ts`), written in C for speed. It draws as light, one
-  draw per kind of light per frame.
+  with the same numbers (`src/config.ts`), written in C for speed. The pictures (floor,
+  creatures, shadows, power ups, sun and moon) are one draw a frame through its own GPU
+  pipeline, `ca-sprite`: textured quads from two textures, with the browser game's hit
+  flash and night shading in the shader. The glowing ring, slashes, sparks, shields and
+  switches are light (the games kit's `games-dot` and `games-beam`). Until the textures
+  are on the GPU the creatures are drawn as light, as before.
+- `art/`: `atlas.png` (the 16 paintings, the 5 walk cycles at 12 frames a second, the
+  power ups, sun, moon and a shadow, 4096 x 2816), `floor.png` (the stone arena by day and
+  by night, seen from above) and `atlas.h` (where each picture is). Made from the
+  browser-game branch:
+
+  ```
+  git worktree add ../browser origin/browser-game
+  node tools/bake.mjs /tmp/baked              # the canvas-drawn art, with Playwright
+  python3 tools/atlas.py ../browser/browser-game /tmp/baked art
+  ```
+- `tools/preview.folk` and `tools/render-preview.py`: the previews above, off the table
+  (what the game wishes drawn, drawn as the GPU would).
 - `app.tcl`: the app's manifest.
 - `test/test-creaturearena.folk`: a headless test. It checks that a fingertip flips a gene,
   both palms start the fight, a hand leads its creature, a pinch bites, each power up does
@@ -60,10 +77,11 @@ With the SDK's own tools, on Folk built from the SDK:
 
 - `dream check`: no errors or warnings.
 - `dream test`: passes.
-- `dream budget` against the reference table: 1.8 ms CPU a frame (budget 2), 0.08 of a
-  core (budget 0.25), about 1.9 ms GPU a frame (budget 2, an estimate), first light in
-  about 10 ms.
-- `dream studio`: the previews above are from the emulated table.
+- `dream budget` against the reference table, with the pictures: 1.35 ms CPU a frame
+  (budget 2), 0.06 of a core (budget 0.25), about 1.3 ms GPU a frame (budget 2, an
+  estimate), first light in about 10 ms.
+- The previews above: `tools/preview.folk` on the made-up rig, drawn by
+  `tools/render-preview.py`.
 
 Not yet checked: playing it on the real table with real hands. Tracking noise, the
 cameras' delay and real light can only be checked there (`dream zap`).
@@ -83,10 +101,9 @@ dream zap         # only to send it to a real table
 
 ## Known limits
 
-- **Creatures are drawn as light, not as their paintings.** Daydream's public drawing
-  statements are glowing dots, beams and triangles. Each creature gets its painting's
-  colours and its main features (wings, ears, plates, spines, horns, a coil, a plume, a
-  mane), but not the painting itself. If Daydream makes image drawing public, the painted
-  creatures and their walk cycles could go on the table instead.
+- Seen from above, a painting stands upright for its own player, so the other player
+  sees it upside down.
+- The browser game's floating words (BOOST, BITTER!), particles, banners and screen shake
+  are not on the table yet; its light effects are RJ's.
 - Two players only, at the short ends. No computer opponent.
 - No creature code entry yet: genes are picked with the switches.

@@ -36,11 +36,22 @@
 # and the events `Notify: creature arena hit on player P for DAMAGE`
 # and `Notify: creature arena won by player P`.
 #
-# Drawn as light (the games kit's games-dot and games-beam pipelines,
-# and fillTriangle for ears and wings), one draw per pipeline per frame,
-# built in C. Labels go through `to draw text onto`.
+# Drawn with the browser game's own pictures: the creatures' paintings
+# and walk cycles, the power ups, the sun and the moon, and the stone
+# arena by day and by night, all in two textures (art/atlas.png and
+# art/floor.png, made by tools/bake.mjs and tools/atlas.py from the
+# browser-game branch) and drawn by one sprite pipeline (ca-sprite) in
+# one draw a frame. Light effects (the glowing ring, slashes, sparks,
+# shields, the switches) go through the games kit's games-dot and
+# games-beam pipelines. Everything is built in C each frame. Labels go
+# through `to draw text onto`. Until the textures are on the GPU (and
+# in the headless tests) the creatures are drawn as light.
 
 set gamesDir "[pwd]/kits/games"
+# This program's folder (art/ is beside it), wherever it runs from: the
+# table's checkout, a guest's fetched commit, `dream test`.
+set arenaDir [file dirname [file normalize $this]]
+if {![file exists $arenaDir/art/atlas.h]} { set arenaDir [pwd] }
 set spatialDir "[pwd]/kits/spatial"
 
 # The fight's numbers are the browser game's (src/config.ts), in its
@@ -67,15 +78,16 @@ set ARENA_SETTINGS {
     followDeadzone 15 followFull 90
     switchReach 0.04 dwellFlip 0.6 readyHold 1.0 readyReach 0.07
     textHeight 0.022
+    spriteHeight 205 bobHeight 9 lean 0.1 lungeLean 0.24 hitFlash 0.16
 }
 # Layers: games draw at 90-98, under the tag masks (100).
-set ARENA_LAYERS {fillTriangle 91 games-beam 92 games-dot 94}
+set ARENA_LAYERS {ca-sprite 90.5 fillTriangle 91 games-beam 92 games-dot 94}
 set ARENA_TEXT_LAYER 96
 
 set arenaThis $this
 
 set cc [C]
-$cc cflags -I$spatialDir -I$gamesDir
+$cc cflags -I$spatialDir -I$gamesDir -I$arenaDir/art
 $cc include <math.h>
 $cc include <string.h>
 $cc include <pthread.h>
@@ -83,6 +95,7 @@ $cc include "spatial.h"
 $cc include "spatial_jim.h"
 $cc include "physics.h"
 $cc include "games_jim.h"
+$cc include "atlas.h"
 $cc code {
     /* ------------------------------------------------ the creatures */
 
@@ -140,6 +153,7 @@ $cc code {
         double dayNightMin, dayNightMax, dayNightTransition, advantage, firstSwitchMin, firstSwitchMax;
         double countdown, koPause, winnerTime, followDeadzone, followFull;
         double switchReach, dwellFlip, readyHold, readyReach, textHeight;
+        double spriteHeight, bobHeight, lean, lungeLean, hitFlash;   /* the pictures (render.ts, config.ts motion) */
         int maxOnField;
     } CaConfig;
 
@@ -156,6 +170,7 @@ $cc code {
         double x, y, vx, vy, hp;
         double cooldown, stun, flash, boost, jitter, bitter, charged, shield;
         double stamina, restT, swingT, swingDash, bob;
+        double walkT;             /* the walk cycle's clock (drawing only) */
         int winded, sprinting, swingHit;
         SpVec2 swingDir, facing;
         /* This frame's input. */
@@ -633,6 +648,43 @@ $cc code {
         if (f->bitter > 0) { gm_dot(cv, p, s * 1.2, s * 1.3, s * 0.2, gm_rgba(0.5f, 1, 0.3f, 0.5f + 0.3f * sin(now * 20))); }
         if (f->flash > 0) { gm_dot(cv, p, 0, s * 1.1, s * 0.2, gm_rgba(1, 1, 1, 0.6f)); }
     }
+
+    /* -------------------------------------------------------- pictures */
+
+    /* The ca-sprite pipeline's instances: {viewport surfaceToClip TEX
+     * ASPECT {cx cy ux uy} {u0 v0 u1 v1} {flash night alpha 0}} in
+     * display pixels. u is half the picture's width along its rows;
+     * its columns run along perp(u) * ASPECT (signed, so a mirrored
+     * map works). */
+    typedef struct { GmBuf buf; int n; int atlas, floor; } CaSprites;
+
+    /* A picture centred at c (m), its top towards `up` (unit), half
+     * sizes hw and hh (m), turned by `turn` radians; uv from a cell.
+     * flip mirrors it left to right. */
+    static void ca_sprite(GmCanvas* cv, CaSprites* sp, int tex, SpVec2 c, SpVec2 up, double hw, double hh, double turn,
+                          float u0, float v0, float u1, float v1, int flip, float flash, float night, float alpha) {
+        if (!cv->on || alpha <= 0.003f || hw <= 0 || hh <= 0) { return; }
+        SpVec2 upT = ca_rot(up, turn);
+        SpVec2 right = sp_v2(-upT.y, upT.x);
+        SpVec2 pc, pr, pt;
+        if (!sp_table_to_display(cv->M, c, &pc) || !sp_table_to_display(cv->M, sp_add2(c, sp_scale2(right, hw)), &pr) ||
+            !sp_table_to_display(cv->M, sp_add2(c, sp_scale2(upT, hh)), &pt)) { return; }
+        double ux = pr.x - pc.x, uy = pr.y - pc.y;
+        double vx = pc.x - pt.x, vy = pc.y - pt.y;      /* towards the picture's bottom row */
+        double uu = ux * ux + uy * uy;
+        if (uu < 1e-6) { return; }
+        double aspect = (-uy * vx + ux * vy) / uu;
+        if (flip) { float t = u0; u0 = u1; u1 = t; }
+        gm_buf_printf(&sp->buf, "%s{%s %d %.4f {%.1f %.1f %.2f %.2f} {%.6f %.6f %.6f %.6f} {%.3f %.3f %.3f 0}}",
+                      sp->n ? " " : "", cv->head, tex, aspect, pc.x, pc.y, ux, uy, u0, v0, u1, v1, flash, night, alpha);
+        sp->n++;
+    }
+    static void ca_cell(GmCanvas* cv, CaSprites* sp, int cell, SpVec2 c, SpVec2 up, double height, double turn,
+                        int flip, float flash, float night, float alpha) {
+        const CaCell* k = &CA_CELLS[cell];
+        double hh = height * 0.5, hw = height * 0.5 * k->w / k->h;
+        ca_sprite(cv, sp, sp->atlas, c, up, hw, hh, turn, k->u0, k->v0, k->u1, k->v1, flip, flash, night, alpha);
+    }
 }
 
 $cc proc configure {Jim_Obj* settings} void {
@@ -649,6 +701,7 @@ $cc proc configure {Jim_Obj* settings} void {
     SET(dayNightMin); SET(dayNightMax); SET(dayNightTransition); SET(advantage); SET(firstSwitchMin); SET(firstSwitchMax);
     SET(countdown); SET(koPause); SET(winnerTime); SET(followDeadzone); SET(followFull);
     SET(switchReach); SET(dwellFlip); SET(readyHold); SET(readyReach); SET(textHeight);
+    SET(spriteHeight); SET(bobHeight); SET(lean); SET(lungeLean); SET(hitFlash);
     #undef SET
     c.maxOnField = gm_jim_int(interp, settings, "maxOnField", 3);
     Jim_Obj* sp = sp_jim_dict_get(interp, settings, "sprintSpeed");
@@ -703,6 +756,13 @@ $cc proc drop {char* kind double x double y} void {
     pthread_mutex_unlock(&lock);
 }
 
+# Night (1) or day (0) at once (tests, previews).
+$cc proc setNight {int on} void {
+    pthread_mutex_lock(&lock);
+    game.night = on ? 1 : 0; game.nightness = on ? 1 : 0;
+    pthread_mutex_unlock(&lock);
+}
+
 # The state, for tests: {phase P winner W night N creatures {A B}
 #  f1 {x y hp boost jitter bitter charged shield ready genes}
 #  f2 {...}}.
@@ -735,12 +795,14 @@ $cc proc state {} Jim_Obj* {
 
 # Advances the game to `now` (s) and draws it. map: the table map;
 # poses: the `hand ID has pose POSE` poses; viewport and surfaceToClip:
-# the display canvas's ("" draws nothing). Returns {phase NAME
+# the display canvas's ("" draws nothing); textures: {ATLAS FLOOR}, the
+# GPU textures of art/atlas.png and art/floor.png ("" draws the
+# creatures as light). Returns {phase NAME
 # creatures {A B} winner W changed 0|1 draws {PIPELINE INSTANCES ...}
 # labels {{{u v} radians px {text} {r g b a}} ...} notes {{n v s} ...}
 # hits {{P DAMAGE} ...} won P}.
 $cc proc step {double now Jim_Obj* map Jim_Obj* poses
-               Jim_Obj* viewport Jim_Obj* surfaceToClip} Jim_Obj* {
+               Jim_Obj* viewport Jim_Obj* surfaceToClip Jim_Obj* textures} Jim_Obj* {
     SpTableMap M;
     if (!sp_jim_table_map(interp, map, &M)) { FOLK_ERROR("creaturearena: not a table map"); }
     SpVec2 fp[GM_POLY_MAX];
@@ -749,6 +811,17 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
     int nh = gm_read_hands(interp, poses, hands, GM_MAX_HANDS);
     GmCanvas canvas;
     gm_canvas_init(interp, &canvas, &M, viewport, surfaceToClip);
+    CaSprites sprites;
+    memset(&sprites, 0, sizeof(sprites));
+    sprites.atlas = sprites.floor = -1;
+    if (Jim_ListLength(interp, textures) == 2) {
+        jim_wide a, f;
+        if (Jim_GetWide(interp, Jim_ListGetIndex(interp, textures, 0), &a) == JIM_OK &&
+            Jim_GetWide(interp, Jim_ListGetIndex(interp, textures, 1), &f) == JIM_OK) {
+            sprites.atlas = (int)a; sprites.floor = (int)f;
+        }
+    }
+    int art = canvas.on && sprites.atlas >= 0 && sprites.floor >= 0;
     GmNotes notes; notes.count = 0;
     static CaLabels labels, shownLabels;
     labels.n = 0; labels.s[0] = 0;
@@ -878,6 +951,20 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
         }
 
         /* ----------------------------- drawing ----------------------------- */
+        float night = (float)g->nightness;
+        double H = c->spriteHeight * L.k;          /* a creature's picture, m tall */
+        if (art) {
+            /* The stone floor: day, and night fading in over it. The
+             * floor picture is the ring plus a band of wall, 546 of the
+             * ring's 520 units to each side. */
+            double half = L.R * 546.0 / 520.0;
+            if (night < 0.996f) {
+                ca_sprite(&canvas, &sprites, sprites.floor, L.centre, L.in[1], half, half, 0, 0, 0, 0.5f, 1, 0, 0, 0, 1);
+            }
+            if (night > 0.004f) {
+                ca_sprite(&canvas, &sprites, sprites.floor, L.centre, L.in[1], half, half, 0, 0.5f, 0, 1, 1, 0, 0, 0, night);
+            }
+        }
         GmColor dayEdge = ca_hex(0x7fe7ff, 1), warm = ca_hex(0xffd27a, 1), cool = ca_hex(0x6f7cff, 1);
         GmColor edge = gm_mix(gm_mix(dayEdge, warm, 0.45f), gm_mix(dayEdge, cool, 0.55f), (float)g->nightness);
         double pulse = 0.75 + 0.25 * sin(now * 2 * M_PI * 0.35);
@@ -893,6 +980,14 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
             SpVec2 across = sp_v2(-sideDir.y, sideDir.x);
             SpVec2 q = sp_add2(L.centre, sp_scale2(across, k * fmin(L.R + 0.035, L.halfEdge - 0.03)));
             float n = (float)g->nightness;
+            if (art) {
+                /* The sun by day, the moon by night, upright for the player on that side's left. */
+                SpVec2 up = L.in[k < 0 ? 1 : 2];
+                double size = fmin(0.07, fmax(0.035, L.halfEdge - L.R - 0.01) * 1.6);
+                ca_cell(&canvas, &sprites, CA_CELL_SUN, q, up, size, now * 0.2, 0, 0, 0, 1 - n);
+                ca_cell(&canvas, &sprites, CA_CELL_MOON, q, up, size * 0.85, 0, 0, 0, 0, n);
+                continue;
+            }
             /* A full sun by day, a thin pale ring (the moon) by night. */
             gm_dot(&canvas, q, 0.011 * n, 0.016, 0.006, gm_mix(gm_rgba(1, 0.82f, 0.3f, 0.9f), gm_rgba(0.8f, 0.88f, 1, 0.9f), n));
         }
@@ -915,7 +1010,16 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                     }
                 }
                 SpVec2 pv = ca_preview_at(&L, p);
-                ca_draw_creature(&canvas, idx, pv, L.in[p], s, now, 1.0f, dusk);
+                if (art) {
+                    /* The painting, breathing a little, facing the middle of the table. */
+                    double breathe = 1 + 0.02 * sin(now * 2.4 + p);
+                    const CaCell* k = &CA_CELLS[CA_STILL[idx]];
+                    double ph = fmin(H * 1.15, ca_switch_spacing(&L) * 2.0 / fmax(1, k->w / k->h));
+                    ca_cell(&canvas, &sprites, CA_STILL[idx], pv, L.in[p], ph * breathe, 0,
+                            CA_FACES_LEFT[idx] != (p == 2), 0, 0, 1);
+                } else {
+                    ca_draw_creature(&canvas, idx, pv, L.in[p], s, now, 1.0f, dusk);
+                }
                 /* One label: the creature and its genes, in the switches' order
                  * (one text draw, not six: each draw costs the GPU). */
                 snprintf(buf, sizeof(buf), "%s\n%s  %s  %s  %s  %s", cr->name,
@@ -953,7 +1057,23 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
             for (int i = 0; i < g->nPickups; i++) {
                 CaPickup* pu = &g->pickups[i];
                 float a = pu->age > c->lifetime - 2 ? (fmod(pu->age, 0.3) < 0.15 ? 0.3f : 1.0f) : 1.0f;
-                ca_draw_pickup(&canvas, pu->kind, ca_world_to_table(&L, pu->x, pu->y), c->pickupRadius * L.k * 0.8, now, a);
+                SpVec2 at = ca_world_to_table(&L, pu->x, pu->y);
+                if (art) {
+                    /* As render.ts drawPickup: a glow on the floor, the icon
+                     * floating above it, popping in; upright for the
+                     * player at the nearer end. */
+                    static const unsigned GLOW[3] = {0xffbe78, 0x78e682, 0xbe96ff};
+                    static const int CELL[3] = {CA_CELL_COFFEE, CA_CELL_GREENS, CA_CELL_ORB};
+                    double r = c->pickupRadius * L.k;
+                    gm_dot(&canvas, at, 0, r, r * 0.8, ca_hex(GLOW[pu->kind], 0.55f * a));
+                    double appear = fmin(1, pu->age / 0.35), pop = appear < 1 ? 1 + sin(appear * M_PI) * 0.3 : 1;
+                    int near = sp_dist2(at, L.mid[1]) <= sp_dist2(at, L.mid[2]) ? 1 : 2;
+                    double size = 60 * L.k * 1.25 * appear * pop, lift = (26 + sin(now * 3 + i) * 6) * L.k * 0.5;
+                    double turn = pu->kind == PU_GREENS ? sin(now * 2) * 0.08 : 0;
+                    ca_cell(&canvas, &sprites, CELL[pu->kind], sp_add2(at, sp_scale2(L.in[near], lift)), L.in[near], size, turn, 0, 0, 0, a);
+                } else {
+                    ca_draw_pickup(&canvas, pu->kind, at, c->pickupRadius * L.k * 0.8, now, a);
+                }
             }
             if (g->hasPending && (g->side[1].genes[2] == 0 || g->side[2].genes[2] == 0)) {
                 gm_dot(&canvas, ca_world_to_table(&L, g->pending.x, g->pending.y), 0.012, 0.015, 0.01,
@@ -964,17 +1084,52 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                 int idx = ca_creature(&g->side[p]);
                 SpVec2 at = ca_world_to_table(&L, f->x, f->y);
                 if (f->jitter > 0) { at = sp_add2(at, sp_v2((gm_random(&g->rnd) - 0.5) * 0.006, (gm_random(&g->rnd) - 0.5) * 0.006)); }
-                double bob = 1 + 0.06 * fabs(sin(f->bob * M_PI));
                 float alpha = f->hp <= 0 ? 0.35f : 1.0f;
-                /* Whose it is: a short bar of your colour under it, across your view. */
-                SpVec2 under = sp_add2(at, sp_scale2(L.in[p], -s * 1.35));
-                gm_beam(&canvas, sp_add2(under, sp_scale2(L.right[p], -s * 0.8)), sp_add2(under, sp_scale2(L.right[p], s * 0.8)),
-                        0.006, 0.002, 1.0, gm_alpha(gm_player_color(p), 0.9f * alpha));
-                ca_draw_creature(&canvas, idx, at, f->facing, s * bob, now, alpha, g->side[p].genes[1] == 0);
-                ca_effects(&canvas, f, at, s, now, &g->rnd);
+                SpVec2 mid = at;
+                if (art) {
+                    /* The painting (or its walk cycle) as the browser game
+                     * draws it (render.ts drawFighter): upright for its
+                     * player, feet at the back of its body, facing where it
+                     * goes, leaning as it runs, hopping, flashing white
+                     * when hit, shaded blue at night. */
+                    SpVec2 up = L.in[p], right = L.right[p];
+                    double speed = fmin(1.5, hypot(f->vx, f->vy) / c->maxSpeed);
+                    int frames = CA_WALK_FRAMES[idx], cell = CA_STILL[idx], facesLeft = CA_FACES_LEFT[idx];
+                    if (frames > 0) {
+                        f->walkT = speed > 0.08 ? f->walkT + dt * (0.4 + 0.9 * fmin(1, speed)) : 0;
+                        cell = CA_WALK_FIRST[idx] + (int)(f->walkT * CA_WALK_FPS[idx]) % frames;
+                        facesLeft = 0;
+                    }
+                    const CaCell* k = &CA_CELLS[cell];
+                    double h = H * k->h, hop = fabs(sin(f->bob * M_PI)) * c->bobHeight * L.k * fmin(1, speed * 1.5) * (frames > 0 ? 0.25 : 1);
+                    double side = sp_dot2(f->facing, right), lean = fmax(-1, fmin(1, sp_dot2(sp_v2(f->vx, f->vy), right) / c->maxSpeed)) * c->lean;
+                    if (f->swingT >= 0) { lean = sp_dot2(f->swingDir, right) * c->lungeLean * sin(fmin(1, f->swingT / 0.2) * M_PI); }
+                    if (f->hp <= 0) { lean = -(side >= 0 ? 1 : -1) * 0.35; }
+                    if (f->bitter > 0) { lean += sin(now * 14) * 0.18; }
+                    if (f->jitter > 0) { lean += (gm_random(&g->rnd) - 0.5) * 0.08; }
+                    double squash = 1 - 0.04 * fmin(1, speed) * (1 - fabs(sin(f->bob * M_PI)));
+                    SpVec2 feet = sp_sub2(at, sp_scale2(up, s * 0.9));
+                    ca_cell(&canvas, &sprites, CA_CELL_SHADOW, feet, up, s * 1.0, 0, 0, 0, 0, 0.55f * alpha);
+                    SpVec2 centre = sp_add2(feet, sp_scale2(ca_rot(up, lean), h * squash * 0.5 + hop));
+                    float flash = f->flash > 0 ? (float)fmin(1, f->flash / c->hitFlash) * 0.85f : 0;
+                    ca_sprite(&canvas, &sprites, sprites.atlas, centre, up, h * k->w / k->h * 0.5 / squash, h * squash * 0.5, lean,
+                              k->u0, k->v0, k->u1, k->v1, (side >= 0) == facesLeft, flash, 0.32f * night, f->hp <= 0 ? 0.75f : 1.0f);
+                    mid = sp_add2(feet, sp_scale2(up, h * 0.45 + hop));
+                    /* Whose it is: a short bar of your colour at its feet, across your view. */
+                    gm_beam(&canvas, sp_add2(feet, sp_scale2(right, -s * 0.7)), sp_add2(feet, sp_scale2(right, s * 0.7)),
+                            0.004, 0.002, 1.0, gm_alpha(gm_player_color(p), 0.85f * alpha));
+                } else {
+                    double bob = 1 + 0.06 * fabs(sin(f->bob * M_PI));
+                    /* Whose it is: a short bar of your colour under it, across your view. */
+                    SpVec2 under = sp_add2(at, sp_scale2(L.in[p], -s * 1.35));
+                    gm_beam(&canvas, sp_add2(under, sp_scale2(L.right[p], -s * 0.8)), sp_add2(under, sp_scale2(L.right[p], s * 0.8)),
+                            0.006, 0.002, 1.0, gm_alpha(gm_player_color(p), 0.9f * alpha));
+                    ca_draw_creature(&canvas, idx, at, f->facing, s * bob, now, alpha, g->side[p].genes[1] == 0);
+                }
+                ca_effects(&canvas, f, mid, s, now, &g->rnd);
                 if (f->swingT >= 0) {
-                    SpVec2 tip = sp_add2(at, sp_scale2(f->swingDir, s * 2.2));
-                    gm_beam(&canvas, sp_add2(at, sp_scale2(f->swingDir, s)), tip, s * 0.35, s * 0.3, 0.1,
+                    SpVec2 tip = sp_add2(mid, sp_scale2(f->swingDir, s * 2.2));
+                    gm_beam(&canvas, sp_add2(mid, sp_scale2(f->swingDir, s)), tip, s * 0.35, s * 0.3, 0.1,
                             f->swingDash > 0 ? gm_rgba(1, 0.95f, 0.4f, 0.9f) : gm_alpha(ca_hex(CREATURES[idx].glow, 1), 0.7f));
                 }
             }
@@ -1020,7 +1175,17 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
     sp_jim_put(interp, result, "creatures", names);
     sp_jim_put(interp, result, "winner", Jim_NewIntObj(interp, pub[3]));
     sp_jim_put(interp, result, "changed", Jim_NewIntObj(interp, changed));
-    sp_jim_put(interp, result, "draws", gm_canvas_result(interp, &canvas));
+    Jim_Obj* draws = gm_canvas_result(interp, &canvas);
+    if (sprites.n > 0) {
+        /* The pictures under the light: first in the list. */
+        Jim_Obj* all = Jim_NewListObj(interp, NULL, 0);
+        Jim_ListAppendElement(interp, all, Jim_NewStringObj(interp, "ca-sprite", -1));
+        Jim_ListAppendElement(interp, all, Jim_NewStringObj(interp, sprites.buf.s, (int)sprites.buf.n));
+        for (int i = 0; i < Jim_ListLength(interp, draws); i++) { Jim_ListAppendElement(interp, all, Jim_ListGetIndex(interp, draws, i)); }
+        draws = all;
+    }
+    gm_buf_free(&sprites.buf);
+    sp_jim_put(interp, result, "draws", draws);
     sp_jim_put(interp, result, "labels", Jim_NewStringObj(interp, labels.s, labels.n));
     sp_jim_put(interp, result, "labelsChanged", Jim_NewIntObj(interp, labelsChanged));
     sp_jim_put(interp, result, "notes", gm_notes_result(interp, &notes));
@@ -1033,6 +1198,58 @@ $arenaLib configure $ARENA_SETTINGS
 $arenaLib reset 0
 
 Claim the creature arena library is $arenaLib
+
+# The pictures: one textured quad an instance, from the atlas or the
+# floor. place {cx cy ux uy}: the centre and half the width along the
+# picture's rows (display pixels); its columns run along perp(u) *
+# aspect. uv {u0 v0 u1 v1}: the cell. fx {flash night alpha 0}: white
+# when hit, the browser game's night blue (#0b1440, render.ts), fade.
+Wish the GPU compiles pipeline "ca-sprite" {
+    {vec2 viewport mat3 surfaceToClip sampler2D tex float aspect vec4 place vec4 uv vec4 fx} {
+        vec2 u = place.zw;
+        vec2 v = vec2(-u.y, u.x) * aspect;
+        vec2 c = place.xy;
+        vec2 vertices[6] = vec2[6](c - u - v, c + u - v, c + u + v, c - u - v, c + u + v, c - u + v);
+        vec3 p = surfaceToClip * vec3(vertices[gl_VertexIndex], 1.0);
+        return vec4(p.xy / p.z, 0.0, 1.0);
+    } {
+        vec2 clipXy = (gl_FragCoord.xy / viewport) * 2.0 - 1.0;
+        vec3 s = inverse(surfaceToClip) * vec3(clipXy, 1.0);
+        vec2 d = s.xy / s.z - place.xy;
+        vec2 u = place.zw;
+        vec2 v = vec2(-u.y, u.x) * aspect;
+        vec2 l = vec2(dot(d, u) / dot(u, u), dot(d, v) / dot(v, v));
+        if (abs(l.x) > 1.0 || abs(l.y) > 1.0) { return vec4(0.0); }
+        vec4 c = texture(tex, mix(uv.xy, uv.zw, l * 0.5 + 0.5));
+        if (c.a < 0.004) { return vec4(0.0); }
+        vec3 rgb = mix(c.rgb, vec3(0.0033, 0.0070, 0.0513), fx.y);
+        rgb = mix(rgb, vec3(1.0), fx.x);
+        return vec4(rgb, c.a * fx.z);
+    }
+}
+
+# The textures, only while the game is played (46 MB of pictures in
+# all; the image loader keeps them after the first time).
+When creaturearena is wanted & the image loader is /loadImage/ {
+    fn loadImage
+    set art [dict create]
+    foreach name {atlas floor} {
+        if {[catch {dict set art $name [loadImage $arenaDir/art/$name.png]} err]} {
+            puts stderr "creaturearena: can't load art/$name.png: $err"
+            return
+        }
+    }
+    Claim the creature arena pictures are $art
+}
+When creaturearena is wanted & the creature arena pictures are /art/ {
+    set atlas [dict get $art atlas]; set floor [dict get $art floor]
+    Wish the GPU loads image $atlas as texture
+    Wish the GPU loads image $floor as texture
+    When the GPU has loaded image $atlas as texture /atlasTex/ &\
+         the GPU has loaded image $floor as texture /floorTex/ {
+        Claim the creature arena textures are [list $atlasTex $floorTex]
+    }
+}
 
 # The table menu: Games > Creature Arena.
 Claim table menu item creaturearena with label {Creature Arena} color {0.50 0.91 1.00 1} order 91 submenu games \
@@ -1076,7 +1293,9 @@ When creaturearena is wanted &\
             set surfaceToClip [dict get [lindex $projections 0] s2c]
         }
 
-        set result [$arenaLib step $t $map $poses $viewport $surfaceToClip]
+        set textures [lindex [Query! the creature arena textures are /tex/] 0]
+        set textures [expr {$textures eq "" ? "" : [dict get $textures tex]}]
+        set result [$arenaLib step $t $map $poses $viewport $surfaceToClip $textures]
 
         if {$canvas ne ""} {
             dict for {pipeline instances} [dict get $result draws] {
