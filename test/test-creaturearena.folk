@@ -152,24 +152,27 @@ check {[st $arena phase] in {ko won}} "the last bite knocks player 2's creature 
 check {[waitFor {test saw a win by 1} 4] ne ""} "player 1 wins"
 check {[waitFor {the creature arena is won with creatures /c/ winner 1} 2] ne ""} "the win is held"
 
-# 7. The pictures: once the GPU has the textures (stand-ins here: 1 the
-# atlas, 2 the floor), the floor, both creatures, their shadows and the
-# power ups are drawn from them, in one draw.
+# 7. The pictures: once the GPU has the textures (stand-ins here: 1..N
+# the atlas's pages, N+1 the floor), the floor, both creatures, their
+# shadows and the power ups are drawn from them, in one draw.
 $arena startFight
 $arena drop coffee 0 -250
-Assert! when {Claim the creature arena textures are {1 2}} with environment [list [list this test-textures]]
-proc spriteTextures {} {
-    set n [dict create 1 0 2 0]
-    foreach i [drawnInstances ca-sprite] { dict incr n [lindex $i 2] }
+set pages [llength [glob $appDir/art/atlas-*.png]]
+set floorTex [expr {$pages + 1}]
+set stand [lrange {1 2 3 4 5 6 7 8 9 10 11 12} 0 $pages]
+Assert! when [list Claim the creature arena textures are $stand] with environment [list [list this test-textures]]
+proc spriteTextures {floorTex} {
+    set n [dict create atlas 0 floor 0]
+    foreach i [drawnInstances ca-sprite] { dict incr n [expr {[lindex $i 2] == $floorTex ? "floor" : "atlas"}] }
     return $n
 }
 set n {}
 for {set i 0} {$i < 50} {incr i} {
-    set n [spriteTextures]
-    if {[dict get $n 1] >= 6 && [dict get $n 2] >= 1} { break }
+    set n [spriteTextures $floorTex]
+    if {[dict get $n atlas] >= 6 && [dict get $n floor] >= 1} { break }
     sleep 0.02
 }
-check {[dict get $n 1] >= 6 && [dict get $n 2] >= 1} "with the textures: the floor, the creatures, their shadows, the icons: $n"
+check {[dict get $n atlas] >= 6 && [dict get $n floor] >= 1} "with the textures: the floor, the creatures, their shadows, the icons: $n"
 check {[llength [Query! /someone/ wishes the GPU draws pipeline ca-sprite onto canvas /c/ with instances /i/ layer /l/]] == 1} \
     "the pictures are one draw"
 

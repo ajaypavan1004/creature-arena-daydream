@@ -8,13 +8,17 @@ BROWSER_GAME_DIR is the browser game (its public/ and src/walks.json:
 the browser-game branch's browser-game/). BAKED_DIR is tools/bake.mjs's
 output. Writes to OUT_DIR (default art/):
 
-  atlas.png  the 16 creatures' paintings, the walk cycles (every second
-             frame: 12 a second), the power ups, the sun and the moon,
-             and a soft shadow. One texture, so a frame's sprites are
-             one draw.
+  atlas-N.png  the 16 creatures' paintings, the walk cycles (every
+             second frame: 12 a second), the power ups, the sun and the
+             moon, and a soft shadow, on a few pages of about 17 MB each
+             on the GPU: the table loads one page at a time, so each copy
+             to the GPU is a short stall, not one long one (a single
+             4096 x 5632 atlas held the frame for 117 ms). One pipeline
+             draws from all of them, so a frame's sprites are still one
+             draw.
   floor.png  the arena's stone floor by day (left) and by night (right).
-  atlas.h    the cells: where each picture is (uv 0..1 of the colour
-             half) and its size in sprite heights (the browser game's
+  atlas.h    the cells: which page each picture is on, where (uv 0..1
+             of the page's colour half) and its size in sprite heights (the browser game's
              spriteHeight), as the browser game fits them (sprites.ts
              prepare).
 
@@ -23,8 +27,9 @@ alpha below it as grey (Folk's PNG loader drops a PNG's alpha, so the
 pictures carry their own; the ca-sprite pipeline reads both halves). The
 grey is sRGB-encoded, as the GPU decodes the texture as sRGB.
 
-Needs Pillow. A creature is SPRITE_PX tall in the atlas: about its size
-on the table, so the GPU (no mipmaps) neither shrinks nor blows it up much.
+Needs Pillow. A creature is SPRITE_PX tall in the atlas: a little more
+than its size on the table, so the GPU (no mipmaps) neither shrinks nor
+blows it up much.
 """
 import json
 import sys
@@ -32,8 +37,9 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
 
-SPRITE_PX = 320          # a sprite height in atlas pixels
-ICON_PX = 192
+SPRITE_PX = 256          # a sprite height in atlas pixels
+ICON_PX = 160
+PAGE_H = 560             # a page's colour rows at most (two shelves of sprites)
 PAD = 3
 ATLAS_W = 4096
 WALK_STEP = 2            # every second frame of the 24 fps clips
@@ -129,24 +135,30 @@ def main():
     items["shadow"] = len(cells)
     cells.append(("shadow", shadow(), 1.0, 0.375))
 
-    # Shelves, tallest first.
+    # Shelves, tallest first; a new page when a shelf won't fit.
     order = sorted(range(len(cells)), key=lambda i: -cells[i][1].height)
-    place, x, y, shelf = {}, PAD, PAD, 0
+    place, page, x, y, shelf = {}, 0, PAD, PAD, 0
+    heights = []
     for i in order:
         im = cells[i][1]
         if x + im.width + PAD > ATLAS_W:
             x, y, shelf = PAD, y + shelf + PAD, 0
-        place[i] = (x, y)
+        if y + im.height + PAD > PAGE_H:
+            heights.append(y)
+            page, x, y, shelf = page + 1, PAD, PAD, 0
+        place[i] = (page, x, y)
         x += im.width + PAD
         shelf = max(shelf, im.height)
-    height = y + shelf + PAD
-    height = ((height + 255) // 256) * 256
-    if height > 4096:
-        sys.exit(f"atlas.py: the atlas would be {ATLAS_W}x{height}; lower SPRITE_PX")
-    atlas = Image.new("RGBA", (ATLAS_W, height), (0, 0, 0, 0))
-    for i, (x, y) in place.items():
-        atlas.paste(premultiplied_edges(cells[i][1]), (x, y))
-    split(atlas).save(out / "atlas.png", optimize=True)
+    heights.append(y + shelf + PAD)
+    heights = [((h + 31) // 32) * 32 for h in heights]
+    for old in out.glob("atlas*.png"):
+        old.unlink()
+    for p, h in enumerate(heights):
+        atlas = Image.new("RGBA", (ATLAS_W, h), (0, 0, 0, 0))
+        for i, (q, x, y) in place.items():
+            if q == p:
+                atlas.paste(premultiplied_edges(cells[i][1]), (x, y))
+        split(atlas).save(out / f"atlas-{p}.png", optimize=True)
 
     day = Image.open(baked / "floor-day.png").convert("RGBA")
     night = Image.open(baked / "floor-night.png").convert("RGBA")
@@ -156,21 +168,22 @@ def main():
     split(floor).save(out / "floor.png", optimize=True)
 
     def uv(i):
-        x, y = place[i]
+        p, x, y = place[i]
         im = cells[i][1]
-        return (x / ATLAS_W, y / height, (x + im.width) / ATLAS_W, (y + im.height) / height)
+        h = heights[p]
+        return (x / ATLAS_W, y / h, (x + im.width) / ATLAS_W, (y + im.height) / h)
 
     lines = [
-        "/* atlas.h -- made by tools/atlas.py: where each picture is in",
-        " * art/atlas.png (uv 0..1) and its size in sprite heights. */",
-        f"#define CA_ATLAS_W {ATLAS_W}",
-        f"#define CA_ATLAS_H {height}  /* the colour half; the alpha half is below it */",
-        "typedef struct { float u0, v0, u1, v1, w, h; } CaCell;",
+        "/* atlas.h -- made by tools/atlas.py: which page of art/atlas-N.png",
+        " * each picture is on, where (uv 0..1 of the page's colour half; the",
+        " * alpha half is below it) and its size in sprite heights. */",
+        f"#define CA_PAGES {len(heights)}",
+        "typedef struct { float u0, v0, u1, v1, w, h; int page; } CaCell;",
         "static const CaCell CA_CELLS[] = {",
     ]
     for i, (name, im, w, h) in enumerate(cells):
         u0, v0, u1, v1 = uv(i)
-        lines.append(f"    {{{u0:.6f}f, {v0:.6f}f, {u1:.6f}f, {v1:.6f}f, {w:.4f}f, {h:.4f}f}},  /* {i}: {name} */")
+        lines.append(f"    {{{u0:.6f}f, {v0:.6f}f, {u1:.6f}f, {v1:.6f}f, {w:.4f}f, {h:.4f}f, {place[i][0]}}},  /* {i}: {name} */")
     lines.append("};")
     lines.append("/* Each creature's painting, in CREATURES order, and whether it faces left. */")
     lines.append("static const int CA_STILL[16] = {" + ", ".join(str(still[n]) for n in CREATURES) + "};")
@@ -181,8 +194,9 @@ def main():
     lines.append("static const float CA_WALK_FPS[16] = {" + ", ".join(f"{walk.get(n, (0, 0, 0))[2]:.1f}f" for n in CREATURES) + "};")
     lines.append("enum { " + ", ".join(f"CA_CELL_{k.upper()} = {v}" for k, v in items.items()) + " };")
     (out / "atlas.h").write_text("\n".join(lines) + "\n")
-    kb = (out / "atlas.png").stat().st_size // 1024
-    print(f"atlas.py: {len(cells)} cells in {ATLAS_W}x{height} (x2 with alpha, {kb} KB), floor {floor.width}x{floor.height} (x2)")
+    kb = sum(f.stat().st_size for f in out.glob("atlas-*.png")) // 1024
+    mb = sum(ATLAS_W * h * 2 * 4 for h in heights) / 1e6
+    print(f"atlas.py: {len(cells)} cells on {len(heights)} pages {ATLAS_W}x{heights} (x2 with alpha; {kb} KB, {mb:.0f} MB on the GPU), floor {floor.width}x{floor.height} (x2)")
 
 
 if __name__ == "__main__":

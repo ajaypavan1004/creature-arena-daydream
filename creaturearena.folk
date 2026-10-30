@@ -38,7 +38,7 @@
 #
 # Drawn with the browser game's own pictures: the creatures' paintings
 # and walk cycles, the power ups, the sun and the moon, and the stone
-# arena by day and by night, all in two textures (art/atlas.png and
+# arena by day and by night, in a few textures (art/atlas-N.png and
 # art/floor.png, made by tools/bake.mjs and tools/atlas.py from the
 # browser-game branch) and drawn by one sprite pipeline (ca-sprite) in
 # one draw a frame. Light effects (the glowing ring, slashes, sparks,
@@ -671,7 +671,7 @@ $cc code {
      * display pixels. u is half the picture's width along its rows;
      * its columns run along perp(u) * ASPECT (signed, so a mirrored
      * map works). */
-    typedef struct { GmBuf buf; int n; int atlas, floor; } CaSprites;
+    typedef struct { GmBuf buf; int n; int atlas[CA_PAGES], floor; } CaSprites;
 
     /* A picture centred at c (m), its top towards `up` (unit), half
      * sizes hw and hh (m), turned by `turn` radians; uv from a cell.
@@ -698,7 +698,7 @@ $cc code {
                         int flip, float flash, float night, float alpha) {
         const CaCell* k = &CA_CELLS[cell];
         double hh = height * 0.5, hw = height * 0.5 * k->w / k->h;
-        ca_sprite(cv, sp, sp->atlas, c, up, hw, hh, turn, k->u0, k->v0, k->u1, k->v1, flip, flash, night, alpha);
+        ca_sprite(cv, sp, sp->atlas[k->page], c, up, hw, hh, turn, k->u0, k->v0, k->u1, k->v1, flip, flash, night, alpha);
     }
 }
 
@@ -812,9 +812,9 @@ $cc proc state {} Jim_Obj* {
 
 # Advances the game to `now` (s) and draws it. map: the table map;
 # poses: the `hand ID has pose POSE` poses; viewport and surfaceToClip:
-# the display canvas's ("" draws nothing); textures: {ATLAS FLOOR}, the
-# GPU textures of art/atlas.png and art/floor.png ("" draws the
-# creatures as light). Returns {phase NAME
+# the display canvas's ("" draws nothing); textures: {PAGE0 .. FLOOR},
+# the GPU textures of art/atlas-N.png and art/floor.png (anything else
+# draws the creatures as light). Returns {phase NAME
 # creatures {A B} winner W changed 0|1 draws {PIPELINE INSTANCES ...}
 # labels {{{u v} radians px {text} {r g b a}} ...} notes {{n v s} ...}
 # hits {{P DAMAGE} ...} won P}.
@@ -830,15 +830,12 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
     gm_canvas_init(interp, &canvas, &M, viewport, surfaceToClip);
     CaSprites sprites;
     memset(&sprites, 0, sizeof(sprites));
-    sprites.atlas = sprites.floor = -1;
-    if (Jim_ListLength(interp, textures) == 2) {
-        jim_wide a, f;
-        if (Jim_GetWide(interp, Jim_ListGetIndex(interp, textures, 0), &a) == JIM_OK &&
-            Jim_GetWide(interp, Jim_ListGetIndex(interp, textures, 1), &f) == JIM_OK) {
-            sprites.atlas = (int)a; sprites.floor = (int)f;
-        }
+    int art = canvas.on && Jim_ListLength(interp, textures) == CA_PAGES + 1;
+    for (int i = 0; art && i <= CA_PAGES; i++) {
+        jim_wide t;
+        if (Jim_GetWide(interp, Jim_ListGetIndex(interp, textures, i), &t) != JIM_OK || t < 0) { art = 0; break; }
+        if (i < CA_PAGES) { sprites.atlas[i] = (int)t; } else { sprites.floor = (int)t; }
     }
-    int art = canvas.on && sprites.atlas >= 0 && sprites.floor >= 0;
     GmNotes notes; notes.count = 0;
     static CaLabels labels, shownLabels;
     labels.n = 0; labels.s[0] = 0;
@@ -1132,7 +1129,7 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                     ca_cell(&canvas, &sprites, CA_CELL_SHADOW, feet, up, s * 1.0, 0, 0, 0, 0, 0.55f * alpha);
                     SpVec2 centre = sp_add2(feet, sp_scale2(ca_rot(up, lean), h * squash * 0.5 + hop));
                     float flash = f->flash > 0 ? (float)fmin(1, f->flash / c->hitFlash) * 0.85f : 0;
-                    ca_sprite(&canvas, &sprites, sprites.atlas, centre, up, h * k->w / k->h * 0.5 / squash, h * squash * 0.5, lean,
+                    ca_sprite(&canvas, &sprites, sprites.atlas[k->page], centre, up, h * k->w / k->h * 0.5 / squash, h * squash * 0.5, lean,
                               k->u0, k->v0, k->u1, k->v1, (side >= 0) == facesLeft, flash, 0.32f * night, f->hp <= 0 ? 0.75f : 1.0f);
                     mid = sp_add2(feet, sp_scale2(up, h * 0.45 + hop));
                     /* Whose it is: a short bar of its player's colour at its feet. */
@@ -1256,26 +1253,44 @@ Wish the GPU compiles pipeline "ca-sprite" {
     }
 }
 
-# The textures, only while the game is played (about 110 MB of pictures in
-# all; the image loader keeps them after the first time).
+# The pictures: decoded when the game is first played (the image loader
+# keeps them), then copied to the GPU a page at a time, 0.15 s apart, so
+# each copy is a short stall rather than one long one (about 70 MB in
+# all). They stay on the GPU while this program runs, so playing again
+# starts at once; until all are there the creatures are drawn as light.
 When creaturearena is wanted & the image loader is /loadImage/ {
     fn loadImage
-    set art [dict create]
-    foreach name {atlas floor} {
-        if {[catch {dict set art $name [loadImage $arenaDir/art/$name.png]} err]} {
-            puts stderr "creaturearena: can't load art/$name.png: $err"
+    set files [lsort -dictionary [glob -nocomplain $arenaDir/art/atlas-*.png]]
+    lappend files $arenaDir/art/floor.png
+    set ims {}
+    foreach path $files {
+        if {[catch {lappend ims [loadImage $path]} err]} {
+            puts stderr "creaturearena: can't load $path: $err"
             return
         }
     }
-    Claim the creature arena pictures are $art
+    Claim the creature arena pictures are $ims
 }
-When creaturearena is wanted & the creature arena pictures are /art/ {
-    set atlas [dict get $art atlas]; set floor [dict get $art floor]
-    Wish the GPU loads image $atlas as texture
-    Wish the GPU loads image $floor as texture
-    When the GPU has loaded image $atlas as texture /atlasTex/ &\
-         the GPU has loaded image $floor as texture /floorTex/ {
-        Claim the creature arena textures are [list $atlasTex $floorTex]
+When creaturearena is wanted & the creature arena pictures are /ims/ & the slow clock time is /now/ {
+    set asked [lindex [Query! the creature arena asked for a picture at /t/] 0]
+    set last [expr {$asked eq "" ? 0 : [dict get $asked t]}]
+    set texs {}
+    set i 0
+    foreach im $ims {
+        set r [lindex [Query! the GPU has loaded image $im as texture /tex/] 0]
+        if {$r eq ""} {
+            if {[llength [Query! /someone/ wishes the GPU loads image $im as texture]] == 0 && $now - $last >= 0.15} {
+                Hold! -on $arenaThis -key [list arena picture $i] Wish the GPU loads image $im as texture
+                Hold! -on $arenaThis -key arena-asked Claim the creature arena asked for a picture at $now
+            }
+            return
+        }
+        lappend texs [dict get $r tex]
+        incr i
+    }
+    set had [lindex [Query! the creature arena textures are /tex/] 0]
+    if {$had eq "" || [dict get $had tex] ne $texs} {
+        Hold! -on $arenaThis -key arena-textures Claim the creature arena textures are $texs
     }
 }
 

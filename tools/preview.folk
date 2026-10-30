@@ -2,7 +2,7 @@
 # the pick screen and a fight by day and by night on the made-up rig,
 # with stand-in textures, and writes what the game wished drawn at each
 # moment to OUT/NAME/PIPELINE.txt. tools/render-preview.py turns them
-# into PNGs with art/atlas.png and art/floor.png, as the GPU would.
+# into PNGs with art/atlas-N.png and art/floor.png, as the GPU would.
 #
 #     APP_DIR=path/to/app OUT=/tmp/ca-preview ./folk path/to/app/tools/preview.folk
 #     python3 tools/render-preview.py /tmp/ca-preview preview
@@ -21,8 +21,10 @@ loadProgram $appDir/creaturearena.folk
 assertRig
 mockFrameClock
 Assert! when {Wish creaturearena is played} with environment [list [list this preview]]
-# Stand-ins for the GPU's textures: 1 is the atlas, 2 the floor.
-Assert! when {Claim the creature arena textures are {1 2}} with environment [list [list this preview-textures]]
+# Stand-ins for the GPU's textures: 1..N the atlas's pages, N+1 the floor
+# (as render-preview.py numbers them).
+set stand [lrange {1 2 3 4 5 6 7 8 9 10 11 12} 0 [llength [glob $appDir/art/atlas-*.png]]]
+Assert! when [list Claim the creature arena textures are $stand] with environment [list [list this preview-textures]]
 
 set camera $::rigCamera
 set display $::rigDisplay

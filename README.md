@@ -53,11 +53,13 @@ game.
   flash and night shading in the shader. The glowing ring, slashes, sparks, shields and
   switches are light (the games kit's `games-dot` and `games-beam`). Until the textures
   are on the GPU the creatures are drawn as light, as before.
-- `art/`: `atlas.png` (the 16 paintings, the 5 walk cycles at 12 frames a second, the
-  power ups, sun, moon and a shadow, 4096 x 2816), `floor.png` (the stone arena by day and
-  by night, seen from above) and `atlas.h` (where each picture is). Both are RGB with the
-  alpha as a grey lower half, because Folk's PNG loader drops a PNG's alpha channel; the
-  `ca-sprite` pipeline reads both halves. Made from the browser-game branch:
+- `art/`: `atlas-0.png` .. `atlas-3.png` (the 16 paintings, the 5 walk cycles at 12 frames a
+  second, the power ups, sun, moon and a shadow, on pages of about 17 MB each on the GPU),
+  `floor.png` (the stone arena by day and by night, seen from above) and `atlas.h` (which
+  page each picture is on, and where). All are RGB with the alpha as a grey lower half,
+  because Folk's PNG loader drops a PNG's alpha channel; the `ca-sprite` pipeline reads
+  both halves. The table copies them to the GPU a page at a time, 0.15 s apart, so the
+  start of a game is a few short stalls, not one long one. Made from the browser-game branch:
 
   ```
   git worktree add ../browser origin/browser-game

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """render-preview.py -- draws what tools/preview.folk dumped, as the GPU
-would: ca-sprite instances from art/atlas.png and art/floor.png (the
+would: ca-sprite instances from art/atlas-N.png and art/floor.png (the
 pipeline's maths in numpy), then the games kit's light (games-dot and
 games-beam, blended as games.folk's shaders do), then the labels.
 
@@ -176,7 +176,9 @@ def main():
     dump, out = Path(sys.argv[1]), Path(sys.argv[2])
     art = Path(sys.argv[3]) if len(sys.argv) > 3 else Path(__file__).resolve().parent.parent / "art"
     out.mkdir(parents=True, exist_ok=True)
-    texs = {1: load_tex(art / "atlas.png"), 2: load_tex(art / "floor.png")}
+    pages = sorted(art.glob("atlas-*.png"), key=lambda f: int(f.stem.split("-")[1]))
+    texs = {i + 1: load_tex(f) for i, f in enumerate(pages)}   # as preview.folk numbers them
+    texs[len(pages) + 1] = load_tex(art / "floor.png")
     for moment in sorted(p for p in dump.iterdir() if p.is_dir()):
         render(moment, out, texs)
 
