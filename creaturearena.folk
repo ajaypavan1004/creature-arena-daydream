@@ -1,0 +1,1120 @@
+# creaturearena.folk -- Creature Arena on the table: two of the 16 Genome
+# Wrapped creatures fight in a ring of light, one player at each short
+# end of the projected image. It is the browser game's fight
+# (genome-wrapped games/creature-arena, src/sim.ts and src/config.ts)
+# moved to the table: the same rules and numbers, drawn as light, played
+# with hands.
+#
+#   - Pick: your end of the table shows five switches, one per gene
+#     (Flame, Time, Senses, Spark, Muscles). Pinch a switch, or hold a
+#     fingertip on it, to flip it; your creature appears beside them.
+#     Hold your open palm on the ring marked Ready. When both players
+#     are ready the fight counts down.
+#   - Fight: your creature runs towards your hand. A pinch is a bite
+#     (aimed at the other creature when it is close), a fist sprints
+#     (how long depends on your muscle type). First creature to empty
+#     the other's health wins.
+#   - Genes decide the power ups, as in the browser game: coffee boosts
+#     a Blaze and gives an Ember the jitters; bitter greens heal a Bold
+#     creature and send a Keen one reeling; an energy orb charges a
+#     Crackling creature's next bite into a lightning dash and gives a
+#     Still one a shield. Keen creatures sense a power up a second early
+#     and reach further for it. Dawn creatures bite harder by day, Dusk
+#     ones at night, and the day and night take turns.
+#
+# The game never sees DNA: a creature is only its name and four genes.
+#
+# Runs while someone wishes it (Games > Creature Arena in the menu does):
+#
+#   Wish creaturearena is played
+#
+# Publishes (held only when they change):
+#
+#   the creature arena is PHASE with creatures {NAME1 NAME2} winner W
+#       ;# PHASE pick | countdown | fight | ko | won; W 0, 1 or 2
+#
+# and the events `Notify: creature arena hit on player P for DAMAGE`
+# and `Notify: creature arena won by player P`.
+#
+# Drawn as light (the games kit's games-dot and games-beam pipelines,
+# and fillTriangle for ears and wings), one draw per pipeline per frame,
+# built in C. Labels go through `to draw text onto`.
+
+set gamesDir "[pwd]/kits/games"
+set spatialDir "[pwd]/kits/spatial"
+
+# The fight's numbers are the browser game's (src/config.ts), in its
+# world units: the arena's radius is 520 of them, and the arena fills
+# the middle of the table. Times are s. Table lengths (the layout of
+# each player's end) are m.
+set ARENA_SETTINGS {
+    trackingProfile fast
+    maxHp 150 radius 60 maxSpeed 290 responsiveness 12 friction 7
+    damage 5 range 155 arc 1.1 cooldown 0.55 windup 0.09 lunge 380
+    knockback 210 hitStun 0.12 autoAim 1.6
+    sprintSpeed {1.65 1.5 1.3} sprintDrain {0.66 0.32 0.16} sprintRefill 0.24
+    refillDelay 0.5 restartAt 0.3
+    spawnMin 3.5 spawnMax 6.5 maxOnField 3 firstSpawn 2.5 lifetime 14
+    pickupRadius 30 spawnArea 0.75 spawnClearance 150
+    weightCoffee 1 weightGreens 0.22 weightOrb 1
+    foresight 1.0 grabBonus 40
+    boostSpeed 1.55 boostTime 5 jitterTime 1.5
+    heal 10 recoilTime 1.5 recoilSpeed 340 recoilFriction 0.6
+    dashLunge 2.4 dashDamage 9 dashRange 60 holdTime 15
+    dayNightMin 20 dayNightMax 30 dayNightTransition 2.5 advantage 1.4
+    firstSwitchMin 10 firstSwitchMax 16
+    countdown 2.4 koPause 1.3 winnerTime 5
+    followDeadzone 15 followFull 90
+    switchReach 0.04 dwellFlip 0.6 readyHold 1.0 readyReach 0.07
+    textHeight 0.022
+}
+# Layers: games draw at 90-98, under the tag masks (100).
+set ARENA_LAYERS {fillTriangle 91 games-beam 92 games-dot 94}
+set ARENA_TEXT_LAYER 96
+
+set arenaThis $this
+
+set cc [C]
+$cc cflags -I$spatialDir -I$gamesDir
+$cc include <math.h>
+$cc include <string.h>
+$cc include <pthread.h>
+$cc include "spatial.h"
+$cc include "spatial_jim.h"
+$cc include "physics.h"
+$cc include "games_jim.h"
+$cc code {
+    /* ------------------------------------------------ the creatures */
+
+    /* Genes: flame 0 Blaze 1 Ember; time 0 Dusk 1 Dawn; senses 0 Keen
+     * 1 Bold; spark 0 Crackling 1 Still; muscle 0 Sprinter 1 Mixed
+     * 2 Endurance. The creature is flame*8 + time*4 + senses*2 + spark,
+     * the browser game's order (src/creatures.ts). */
+    enum { T_PLUME = 1, T_EARS = 2, T_NECK = 4, T_MANE = 8, T_WINGS = 16, T_FINS = 32,
+           T_ARMOUR = 64, T_COIL = 128, T_SPINES = 256, T_HORNS = 512 };
+    typedef struct { const char* name; unsigned body, light, glow; int traits; } CaCreature;
+    /* Colours and traits from the creatures' paintings. */
+    static const CaCreature CREATURES[16] = {
+        {"Moonwhisker",  0x2f5fd0, 0xbcd4ff, 0xa8dcff, T_PLUME},
+        {"Nightflicker", 0x8a6cc6, 0xd8d2e4, 0xf4a6d8, T_EARS | T_PLUME},
+        {"Duskfang",     0x3f9a3a, 0xbde86c, 0xe6ff7a, T_NECK},
+        {"Starmane",     0x3c6676, 0xc9d6da, 0xeef6ff, T_NECK | T_MANE},
+        {"Sunsniffer",   0xf2c230, 0xfff0b4, 0xfff6c8, T_PLUME},
+        {"Dawnflare",    0xe65f8e, 0xffc4a8, 0xffd45a, T_EARS | T_WINGS},
+        {"Blazeleap",    0xe8622a, 0xffc27a, 0xffd166, T_PLUME},
+        {"Morningdrift", 0x4cc8bf, 0xffd6c0, 0xffe8a8, T_FINS | T_NECK},
+        {"Shadepounce",  0x3b3140, 0x5c4c5e, 0xffb84a, 0},
+        {"Glowpaw",      0x7c3f7c, 0xf2a6ca, 0xffdcf2, T_EARS | T_PLUME},
+        {"Thunderjaw",   0x5c5752, 0x8c8579, 0xffc94a, T_ARMOUR},
+        {"Mooncoil",     0x1f3f8c, 0x6fb6ff, 0xa6e4ff, T_COIL | T_MANE},
+        {"Sparksnout",   0x2f4f30, 0x62804f, 0xffd75a, T_SPINES},
+        {"Sunburrow",    0xb8742e, 0xf2b85a, 0xffd87a, T_MANE},
+        {"Emberjaw",     0x6c2019, 0xc65c3c, 0xff6a2a, T_HORNS},
+        {"Goldenhush",   0x2f5a52, 0xe8c870, 0xffd84a, T_NECK | T_MANE},
+    };
+    static const char* GENE_NAMES[5][3] = {
+        {"Blaze", "Ember", ""}, {"Dusk", "Dawn", ""}, {"Keen", "Bold", ""},
+        {"Crackling", "Still", ""}, {"Sprinter", "Mixed", "Endurance"} };
+    static const int GENE_OPTIONS[5] = {2, 2, 2, 2, 3};
+    static const unsigned GENE_COLORS[5][3] = {
+        {0xff7a3a, 0xc4452d, 0}, {0x6f8cff, 0xffd24a, 0}, {0x4fe0d0, 0xc58cff, 0},
+        {0xffe35a, 0x9fe8c4, 0}, {0xff6b6b, 0xffb36b, 0x7ed957} };
+
+    static GmColor ca_hex(unsigned h, float a) {
+        return gm_rgba(((h >> 16) & 255) / 255.0f, ((h >> 8) & 255) / 255.0f, (h & 255) / 255.0f, a);
+    }
+    static GmColor ca_bright(GmColor c, float k) {
+        return gm_rgba(fminf(1, c.r * k), fminf(1, c.g * k), fminf(1, c.b * k), c.a);
+    }
+
+    /* ------------------------------------------------------ settings */
+
+    typedef struct {
+        double maxHp, radius, maxSpeed, responsiveness, friction;
+        double damage, range, arc, cooldown, windup, lunge, knockback, hitStun, autoAim;
+        double sprintSpeed[3], sprintDrain[3], sprintRefill, refillDelay, restartAt;
+        double spawnMin, spawnMax, firstSpawn, lifetime, pickupRadius, spawnArea, spawnClearance;
+        double weightCoffee, weightGreens, weightOrb, foresight, grabBonus;
+        double boostSpeed, boostTime, jitterTime, heal, recoilTime, recoilSpeed, recoilFriction;
+        double dashLunge, dashDamage, dashRange, holdTime;
+        double dayNightMin, dayNightMax, dayNightTransition, advantage, firstSwitchMin, firstSwitchMax;
+        double countdown, koPause, winnerTime, followDeadzone, followFull;
+        double switchReach, dwellFlip, readyHold, readyReach, textHeight;
+        int maxOnField;
+    } CaConfig;
+
+    /* ------------------------------------------------------- the game */
+
+    enum { PH_PICK, PH_COUNTDOWN, PH_FIGHT, PH_KO, PH_WON };
+    static const char* PHASE_NAMES[5] = {"pick", "countdown", "fight", "ko", "won"};
+    enum { PU_COFFEE, PU_GREENS, PU_ORB };
+    #define CA_PICKUPS 8
+    #define CA_HANDMEM 32
+
+    typedef struct {
+        /* World units (the arena's centre is 0, its radius 520). */
+        double x, y, vx, vy, hp;
+        double cooldown, stun, flash, boost, jitter, bitter, charged, shield;
+        double stamina, restT, swingT, swingDash, bob;
+        int winded, sprinting, swingHit;
+        SpVec2 swingDir, facing;
+        /* This frame's input. */
+        SpVec2 intent; int sprintHeld, attackPressed; int hasHand;
+    } CaFighter;
+
+    typedef struct {
+        int genes[5];
+        int ready;
+        double readyP;            /* 0..1, the palm held on Ready */
+        double dwell[5];          /* a fingertip held on a switch */
+        int latched[5];           /* flipped by this dwell: wait for the finger to leave */
+    } CaSide;
+
+    typedef struct { int kind; double x, y, age; } CaPickup;
+
+    typedef struct {
+        int phase, winner;
+        double t, phaseT;
+        CaSide side[3];           /* [1], [2] */
+        CaFighter f[3];
+        int night; double nightness, cycleIn;
+        CaPickup pickups[CA_PICKUPS]; int nPickups;
+        CaPickup pending; int hasPending;
+        double spawnIn;
+        struct { int id, pinch; double seen; } hand[CA_HANDMEM];
+        GmRandom rnd;
+        int published[4];         /* phase, creature 1, creature 2, winner */
+    } CaGame;
+
+    static CaGame game;
+    static int shownReset = 0;
+    static CaConfig config;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+    static int ca_creature(const CaSide* s) {
+        return s->genes[0] * 8 + s->genes[1] * 4 + s->genes[2] * 2 + s->genes[3];
+    }
+    static double ca_between(CaGame* g, double a, double b) { return a + (b - a) * gm_random(&g->rnd); }
+
+    static void ca_new_fight(CaGame* g) {
+        CaConfig* c = &config;
+        for (int p = 1; p <= 2; p++) {
+            CaFighter* f = &g->f[p];
+            memset(f, 0, sizeof(*f));
+            f->x = (p == 1 ? -0.45 : 0.45) * 520; f->y = 0;
+            f->hp = c->maxHp; f->stamina = 1; f->swingT = -1;
+            f->facing = sp_v2(p == 1 ? 1 : -1, 0);
+        }
+        g->night = gm_random(&g->rnd) < 0.5;
+        g->nightness = g->night ? 1 : 0;
+        g->cycleIn = ca_between(g, c->firstSwitchMin, c->firstSwitchMax);
+        g->nPickups = 0; g->hasPending = 0;
+        g->spawnIn = c->firstSpawn;
+        g->winner = 0;
+    }
+
+    static void ca_reset(CaGame* g, unsigned long long seed) {
+        /* The players' picks outlast a reset; the first one is random. */
+        static int picked = 0;
+        CaSide keep[3];
+        memcpy(keep, g->side, sizeof(keep));
+        memset(g, 0, sizeof(*g));
+        g->rnd.s = seed ? seed : 0xc0ffee;
+        for (int p = 1; p <= 2; p++) {
+            if (picked) { memcpy(g->side[p].genes, keep[p].genes, sizeof(keep[p].genes)); }
+            else { for (int i = 0; i < 5; i++) { g->side[p].genes[i] = (int)(gm_random(&g->rnd) * GENE_OPTIONS[i]) % GENE_OPTIONS[i]; } }
+        }
+        picked = 1;
+        g->phase = PH_PICK;
+        for (int i = 0; i < 4; i++) { g->published[i] = -1; }
+        ca_new_fight(g);
+    }
+
+    /* ------------------------------------------------- the fight rules */
+
+    static int ca_time_edge(const CaGame* g, int p) {
+        int dawn = g->side[p].genes[1] == 1;
+        return g->night ? !dawn : dawn;
+    }
+    static double ca_grab_reach(const CaGame* g, int p) {
+        return config.radius + config.pickupRadius + (g->side[p].genes[2] == 0 ? config.grabBonus : 0);
+    }
+
+    static void ca_sprint(CaFighter* f, int muscle, int moving, double dt) {
+        CaConfig* c = &config;
+        if (f->winded && f->stamina >= c->restartAt) { f->winded = 0; }
+        f->sprinting = f->sprintHeld && moving && !f->winded && f->stamina > 0;
+        if (f->sprinting) {
+            f->stamina = fmax(0, f->stamina - c->sprintDrain[muscle] * dt);
+            f->restT = 0;
+            if (f->stamina <= 0) { f->winded = 1; f->sprinting = 0; }
+        } else {
+            f->restT += dt;
+            if (f->restT >= c->refillDelay) { f->stamina = fmin(1, f->stamina + c->sprintRefill * dt); }
+        }
+    }
+
+    static void ca_move(CaGame* g, int p, double dt) {
+        CaConfig* c = &config;
+        CaFighter* f = &g->f[p];
+        CaFighter* foe = &g->f[3 - p];
+        #define DOWN(v) f->v = fmax(0, f->v - dt)
+        DOWN(cooldown); DOWN(stun); DOWN(flash); DOWN(boost); DOWN(jitter); DOWN(bitter); DOWN(charged); DOWN(shield);
+        #undef DOWN
+        double ix = f->intent.x, iy = f->intent.y, il = hypot(ix, iy);
+        if (il > 1) { ix /= il; iy /= il; il = 1; }
+        int swinging = f->swingT >= 0;
+        int frozen = f->stun > 0 || swinging || f->hp <= 0 || f->jitter > 0;
+        ca_sprint(f, g->side[p].genes[4], il > 0.05 && !frozen && f->bitter <= 0, dt);
+        if (f->bitter > 0) {
+            double k = 1 - exp(-c->recoilFriction * dt);
+            f->vx -= f->vx * k; f->vy -= f->vy * k;
+        } else {
+            if (frozen) { ix = 0; iy = 0; }
+            double top = c->maxSpeed * (f->boost > 0 ? c->boostSpeed : 1)
+                       * (f->sprinting ? c->sprintSpeed[g->side[p].genes[4]] : 1);
+            double k = 1 - exp(-(il > 0.05 && !frozen ? c->responsiveness : c->friction) * dt);
+            f->vx += (ix * top - f->vx) * k;
+            f->vy += (iy * top - f->vy) * k;
+        }
+        if (f->jitter > 0 && f->stun <= 0) { f->vx *= 0.5; f->vy *= 0.5; }
+        f->x += f->vx * dt; f->y += f->vy * dt;
+        double speed = hypot(f->vx, f->vy);
+        f->bob = speed > 25 ? f->bob + dt * 4.2 * (0.5 + 0.5 * speed / c->maxSpeed) : 0;
+        /* Face the way it runs; standing still, face the other creature. */
+        if (swinging) { f->facing = f->swingDir; }
+        else if (speed > 30) { f->facing = sp_v2(f->vx / speed, f->vy / speed); }
+        else {
+            SpVec2 d = sp_v2(foe->x - f->x, foe->y - f->y);
+            double dl = sp_len2(d);
+            if (dl > 20) { f->facing = gm_unit(sp_add2(sp_scale2(f->facing, 0.9), sp_scale2(d, 0.1 / dl)), f->facing); }
+        }
+    }
+
+    static void ca_hit(CaGame* g, int from, int to, SpVec2 dir, GmNotes* notes, int* hits, int* nHits) {
+        CaConfig* c = &config;
+        CaFighter* a = &g->f[from];
+        CaFighter* b = &g->f[to];
+        if (b->shield > 0) {
+            b->shield = 0;
+            b->vx += dir.x * c->knockback * 0.4; b->vy += dir.y * c->knockback * 0.4;
+            gm_note(notes, 79, 70, 0.4);
+            return;
+        }
+        double base = a->swingDash > 0 ? c->dashDamage : c->damage;
+        double damage = round(base * (ca_time_edge(g, from) ? c->advantage : 1));
+        b->hp = fmax(0, b->hp - damage);
+        double kb = c->knockback * (a->swingDash > 0 ? 1.6 : 1);
+        b->vx += dir.x * kb; b->vy += dir.y * kb;
+        b->stun = c->hitStun; b->flash = 0.16;
+        if (*nHits < 4) { hits[(*nHits)++] = to * 1000 + (int)damage; }
+        gm_note(notes, gm_scale_note(1.0 - b->hp / c->maxHp), 70 + damage * 3, 0.25);
+        if (b->hp <= 0) {
+            g->phase = PH_KO; g->phaseT = 0; g->winner = from;
+            gm_note(notes, 48, 90, 1.2); gm_note(notes, 55, 80, 1.2);
+        }
+    }
+
+    static void ca_attack(CaGame* g, int p, double dt, GmNotes* notes, int* hits, int* nHits) {
+        CaConfig* c = &config;
+        CaFighter* f = &g->f[p];
+        CaFighter* foe = &g->f[3 - p];
+        if (f->swingT >= 0) {
+            f->swingT += dt;
+            if (!f->swingHit && f->swingT >= c->windup) {
+                f->swingHit = 1;
+                double dx = foe->x - f->x, dy = foe->y - f->y, d = hypot(dx, dy);
+                double range = c->range + (f->swingDash > 0 ? c->dashRange : 0);
+                int facingOk = d < 1 || (dx * f->swingDir.x + dy * f->swingDir.y) / d >= cos(c->arc);
+                if (d <= range && facingOk && foe->hp > 0 && g->phase == PH_FIGHT) {
+                    ca_hit(g, p, 3 - p, d > 1 ? sp_v2(dx / d, dy / d) : f->swingDir, notes, hits, nHits);
+                }
+            }
+            if (f->swingT >= c->windup + 0.14) { f->swingT = -1; }
+        }
+        int canSwing = f->cooldown <= 0 && f->stun <= 0 && f->swingT < 0 && f->hp > 0 && f->bitter <= 0;
+        if (f->attackPressed && canSwing) {
+            double dx = foe->x - f->x, dy = foe->y - f->y, d = hypot(dx, dy);
+            double il = sp_len2(f->intent);
+            int dash = f->charged > 0;
+            if (d < (c->range + (dash ? c->dashRange : 0)) * c->autoAim && d > 1) { f->swingDir = sp_v2(dx / d, dy / d); }
+            else if (il > 0.2) { f->swingDir = sp_scale2(f->intent, 1 / il); }
+            else { f->swingDir = f->facing; }
+            f->swingT = 0; f->swingHit = 0; f->swingDash = dash; f->charged = 0;
+            f->cooldown = c->cooldown;
+            double lunge = c->lunge * (dash ? c->dashLunge : 1);
+            f->vx += f->swingDir.x * lunge; f->vy += f->swingDir.y * lunge;
+            gm_note(notes, dash ? 76 : 69, dash ? 80 : 45, 0.12);
+        }
+        f->attackPressed = 0;
+    }
+
+    static void ca_separate(CaFighter* a, CaFighter* b) {
+        double dx = b->x - a->x, dy = b->y - a->y, d = hypot(dx, dy), min = config.radius * 2;
+        if (d >= min) { return; }
+        double nx = d > 0.01 ? dx / d : 1, ny = d > 0.01 ? dy / d : 0, push = (min - d) / 2;
+        a->x -= nx * push; a->y -= ny * push; b->x += nx * push; b->y += ny * push;
+    }
+    static void ca_keep_in(CaFighter* f) {
+        double max = 520 - config.radius, d = hypot(f->x, f->y);
+        if (d <= max) { return; }
+        double nx = f->x / d, ny = f->y / d;
+        f->x = nx * max; f->y = ny * max;
+        double out = f->vx * nx + f->vy * ny;
+        if (out > 0) { double bounce = f->bitter > 0 ? 1.7 : 1; f->vx -= out * nx * bounce; f->vy -= out * ny * bounce; }
+    }
+
+    static int ca_find_spot(CaGame* g, double* x, double* y) {
+        CaConfig* c = &config;
+        double R = 520 * c->spawnArea;
+        for (int tries = 0; tries < 20; tries++) {
+            double a = gm_random(&g->rnd) * 2 * M_PI, r = sqrt(gm_random(&g->rnd)) * R;
+            double px = cos(a) * r, py = sin(a) * r;
+            int clear = 1;
+            for (int p = 1; p <= 2; p++) { if (hypot(g->f[p].x - px, g->f[p].y - py) <= c->spawnClearance) { clear = 0; } }
+            for (int i = 0; i < g->nPickups; i++) { if (hypot(g->pickups[i].x - px, g->pickups[i].y - py) <= c->pickupRadius * 4) { clear = 0; } }
+            if (clear) { *x = px; *y = py; return 1; }
+        }
+        return 0;
+    }
+
+    static void ca_spawn(CaGame* g, double dt) {
+        CaConfig* c = &config;
+        int n = 0;
+        for (int i = 0; i < g->nPickups; i++) {
+            g->pickups[i].age += dt;
+            if (g->pickups[i].age < c->lifetime) { g->pickups[n++] = g->pickups[i]; }
+        }
+        g->nPickups = n;
+        g->spawnIn -= dt;
+        if (!g->hasPending && g->spawnIn <= c->foresight && g->nPickups < config.maxOnField) {
+            double x, y;
+            if (ca_find_spot(g, &x, &y)) {
+                double total = c->weightCoffee + c->weightGreens + c->weightOrb;
+                double r = gm_random(&g->rnd) * total;
+                int kind = r < c->weightCoffee ? PU_COFFEE : r < c->weightCoffee + c->weightGreens ? PU_GREENS : PU_ORB;
+                g->pending.kind = kind; g->pending.x = x; g->pending.y = y; g->pending.age = 0;
+                g->hasPending = 1;
+            }
+        }
+        if (g->spawnIn > 0) { return; }
+        g->spawnIn = ca_between(g, c->spawnMin, c->spawnMax);
+        if (g->hasPending && g->nPickups < config.maxOnField && g->nPickups < CA_PICKUPS) {
+            g->pickups[g->nPickups++] = g->pending;
+        }
+        g->hasPending = 0;
+    }
+
+    static void ca_collect(CaGame* g, GmNotes* notes) {
+        CaConfig* c = &config;
+        for (int p = 1; p <= 2; p++) {
+            CaFighter* f = &g->f[p];
+            if (f->hp <= 0) { continue; }
+            double reach = ca_grab_reach(g, p);
+            for (int i = 0; i < g->nPickups; i++) {
+                if (hypot(g->pickups[i].x - f->x, g->pickups[i].y - f->y) >= reach) { continue; }
+                int kind = g->pickups[i].kind;
+                g->pickups[i] = g->pickups[--g->nPickups];
+                const int* genes = g->side[p].genes;
+                int good = 1;
+                if (kind == PU_COFFEE) {
+                    if (genes[0] == 0) { f->boost = c->boostTime; } else { f->jitter = c->jitterTime; f->boost = 0; good = 0; }
+                } else if (kind == PU_GREENS) {
+                    if (genes[2] == 1) { f->hp = fmin(c->maxHp, f->hp + c->heal); }
+                    else {
+                        double a = gm_random(&g->rnd) * 2 * M_PI;
+                        f->bitter = c->recoilTime; f->vx = cos(a) * c->recoilSpeed; f->vy = sin(a) * c->recoilSpeed;
+                        good = 0;
+                    }
+                } else {
+                    if (genes[3] == 0) { f->charged = c->holdTime; } else { f->shield = c->holdTime; }
+                }
+                if (good) { gm_note(notes, 72, 70, 0.3); gm_note(notes, 79, 60, 0.3); }
+                else { gm_note(notes, 50, 70, 0.4); gm_note(notes, 49, 60, 0.4); }
+                break;
+            }
+        }
+    }
+
+    /* ------------------------------------------------------ the table */
+
+    typedef struct {
+        SpVec2 centre, mid[3], in[3], right[3];
+        double R, k, halfEdge;    /* arena radius (m), m per world unit, half the short edge */
+    } CaLayout;
+
+    static int ca_layout(const SpVec2* f, int nf, CaLayout* L) {
+        if (nf != 4) { return 0; }
+        double l[4];
+        for (int k = 0; k < 4; k++) { l[k] = sp_dist2(f[k], f[(k + 1) % 4]); }
+        int a = (l[1] + l[3] < l[0] + l[2]) ? 1 : 0, b = a + 2;
+        SpVec2 ma = sp_scale2(sp_add2(f[a], f[(a + 1) % 4]), 0.5), mb = sp_scale2(sp_add2(f[b], f[(b + 1) % 4]), 0.5);
+        int e1 = ma.x < mb.x ? a : b, e2 = ma.x < mb.x ? b : a;
+        L->centre = sp_polygon_centroid(f, nf);
+        int e[3] = {0, e1, e2};
+        for (int p = 1; p <= 2; p++) {
+            L->mid[p] = sp_scale2(sp_add2(f[e[p]], f[(e[p] + 1) % 4]), 0.5);
+            L->in[p] = gm_unit(sp_sub2(L->centre, L->mid[p]), sp_v2(p == 1 ? 1 : -1, 0));
+            L->right[p] = sp_v2(-L->in[p].y, L->in[p].x);
+        }
+        L->halfEdge = (l[e1] + l[e2]) / 4;
+        double halfLong = sp_dist2(L->mid[1], L->mid[2]) / 2;
+        L->R = fmin(L->halfEdge * 0.92, halfLong - 0.30);
+        if (L->R < 0.12) { L->R = fmin(L->halfEdge * 0.92, halfLong * 0.6); }
+        L->k = L->R / 520.0;
+        return 1;
+    }
+    static SpVec2 ca_world_to_table(const CaLayout* L, double x, double y) {
+        return sp_add2(L->centre, sp_v2(x * L->k, y * L->k));
+    }
+    static SpVec2 ca_table_to_world(const CaLayout* L, SpVec2 p) {
+        SpVec2 d = sp_sub2(p, L->centre);
+        return sp_v2(d.x / L->k, d.y / L->k);
+    }
+    /* A point at a player's end: `d` m in from the edge, `r` m to their right. */
+    static SpVec2 ca_at(const CaLayout* L, int p, double d, double r) {
+        return sp_add2(L->mid[p], sp_add2(sp_scale2(L->in[p], d), sp_scale2(L->right[p], r)));
+    }
+    static double ca_switch_spacing(const CaLayout* L) { return fmin(0.11, L->halfEdge * 0.26); }
+    static SpVec2 ca_switch_at(const CaLayout* L, int p, int i) { return ca_at(L, p, 0.10, (i - 2) * ca_switch_spacing(L)); }
+    static SpVec2 ca_ready_at(const CaLayout* L, int p) { return ca_at(L, p, 0.23, ca_switch_spacing(L) * 1.3); }
+    static SpVec2 ca_preview_at(const CaLayout* L, int p) { return ca_at(L, p, 0.23, -ca_switch_spacing(L) * 1.1); }
+
+    /* The player whose end the hand's arm comes from. */
+    static int ca_owner(const CaLayout* L, const GmHand* h) {
+        SpVec2 w = h->wrist;
+        if (sp_dist2(w, h->palm) < 0.005) { w = h->palm; }
+        SpVec2 back = sp_add2(w, sp_scale2(sp_sub2(w, h->palm), 2.0));
+        return sp_dist2(back, L->mid[1]) <= sp_dist2(back, L->mid[2]) ? 1 : 2;
+    }
+
+    /* ---------------------------------------------------------- labels */
+
+    typedef struct { char s[4096]; int n; } CaLabels;
+    static void ca_label(CaLabels* lb, const CaLayout* L, const SpTableMap* M, int p, SpVec2 at,
+                         const char* text, double height, GmColor col) {
+        SpVec2 a, b;
+        if (!sp_table_to_display(M, at, &a) || !sp_table_to_display(M, sp_add2(at, sp_scale2(L->right[p], 0.05)), &b)) { return; }
+        double dx = b.x - a.x, dy = b.y - a.y, pxPerM = hypot(dx, dy) / 0.05;
+        double radians = atan2(-dy, dx);
+        int room = (int)sizeof(lb->s) - lb->n;
+        if (room < 200) { return; }
+        lb->n += snprintf(lb->s + lb->n, room, "%s{{%.1f %.1f} %.3f %.1f {%s} {%.3f %.3f %.3f %.3f}}",
+                          lb->n ? " " : "", a.x, a.y, radians, height * pxPerM, text, col.r, col.g, col.b, col.a);
+    }
+
+    /* -------------------------------------------------------- drawing */
+
+    static SpVec2 ca_rot(SpVec2 v, double a) { return sp_v2(v.x * cos(a) - v.y * sin(a), v.x * sin(a) + v.y * cos(a)); }
+
+    /* A creature as light: at p (m), facing `fw` (unit), body radius s (m). */
+    static void ca_draw_creature(GmCanvas* cv, int idx, SpVec2 p, SpVec2 fw, double s, double now, float alpha, int dusk) {
+        const CaCreature* cr = &CREATURES[idx];
+        GmColor body = ca_hex(cr->body, alpha), light = ca_hex(cr->light, alpha), glow = ca_hex(cr->glow, alpha);
+        /* Dark creatures still need to read as light: lift them a little. */
+        float lum = 0.3f * body.r + 0.59f * body.g + 0.11f * body.b;
+        if (lum < 0.3f) { body = ca_bright(body, 0.3f / fmaxf(lum, 0.08f)); }
+        SpVec2 side = sp_v2(-fw.y, fw.x);
+        SpVec2 head = sp_add2(p, sp_scale2(fw, s * ((cr->traits & T_NECK) ? 1.25 : 0.95)));
+        SpVec2 back = sp_sub2(p, sp_scale2(fw, s * 0.9));
+        int coil = cr->traits & T_COIL;
+        /* Tail. */
+        if (cr->traits & T_PLUME) {
+            gm_beam(cv, back, sp_add2(back, sp_add2(sp_scale2(fw, -s * 1.3), sp_scale2(side, s * 0.5))), s * 0.55, s * 0.2, 0.5, gm_alpha(glow, 0.8));
+        } else if (cr->traits & T_FINS) {
+            for (int k = -1; k <= 1; k += 2) {
+                gm_beam(cv, back, sp_add2(back, sp_add2(sp_scale2(fw, -s * 1.1), sp_scale2(side, k * s * 0.6))), s * 0.22, s * 0.25, 0.2, gm_alpha(light, 0.8));
+            }
+        } else if (!coil) {
+            gm_beam(cv, back, sp_add2(back, sp_add2(sp_scale2(fw, -s * 0.9), sp_scale2(side, s * 0.25))), s * 0.16, s * 0.15, 0.3, gm_alpha(body, 0.9));
+        }
+        /* Wings, under the body. */
+        if (cr->traits & T_WINGS) {
+            for (int k = -1; k <= 1; k += 2) {
+                SpVec2 root = sp_add2(p, sp_scale2(side, k * s * 0.4));
+                SpVec2 tip = sp_add2(p, sp_add2(sp_scale2(side, k * s * 2.1), sp_scale2(fw, -s * 0.2)));
+                SpVec2 rear = sp_add2(p, sp_add2(sp_scale2(side, k * s * 1.3), sp_scale2(fw, -s * 1.0)));
+                gm_tri(cv, root, tip, rear, gm_alpha(body, 0.55));
+                gm_beam(cv, root, tip, s * 0.08, s * 0.2, 0.6, gm_alpha(glow, 0.8));
+            }
+        }
+        /* Body: a coil is a ring, the rest a disc with a lighter belly glow. */
+        if (coil) {
+            gm_dot(cv, p, s * 0.55, s * 1.05, s * 0.15, body);
+            gm_dot(cv, p, s * 0.25, s * 0.5, s * 0.2, gm_alpha(light, 0.5));
+        } else {
+            gm_dot(cv, p, 0, s, s * 0.22, body);
+            gm_dot(cv, sp_add2(p, sp_scale2(fw, -s * 0.1)), 0, s * 0.55, s * 0.08, gm_alpha(light, 0.35));
+        }
+        /* Back: spikes for a crackling look, plates, spines or a mane. */
+        if (cr->traits & T_ARMOUR) {
+            for (int i = 0; i < 6; i++) {
+                double a = i * M_PI / 3 + 0.3;
+                gm_dot(cv, sp_add2(p, sp_scale2(ca_rot(fw, a), s * 0.72)), 0, s * 0.26, s * 0.1, gm_alpha(ca_bright(body, 1.4f), 0.9));
+            }
+            gm_dot(cv, p, s * 0.9, s * 0.98, s * 0.25, gm_alpha(glow, 0.6));
+        }
+        if (cr->traits & T_SPINES) {
+            for (int i = -3; i <= 3; i++) {
+                SpVec2 dir = ca_rot(sp_scale2(fw, -1), i * 0.32);
+                SpVec2 a = sp_add2(p, sp_scale2(dir, s * 0.5));
+                gm_beam(cv, a, sp_add2(a, sp_scale2(dir, s * 0.85)), s * 0.07, s * 0.08, 0.2, gm_alpha(ca_bright(body, 1.5f), 0.9));
+            }
+        }
+        if (cr->traits & T_MANE) {
+            SpVec2 a = sp_add2(head, sp_scale2(fw, -s * 0.2));
+            gm_beam(cv, a, sp_add2(back, sp_scale2(fw, s * 0.1)), s * 0.3, s * 0.35, 0.4, gm_alpha(light, 0.75));
+        }
+        /* Neck. */
+        if (cr->traits & T_NECK) { gm_beam(cv, sp_add2(p, sp_scale2(fw, s * 0.4)), head, s * 0.38, s * 0.15, 1.0, body); }
+        /* Head. */
+        double hs = s * ((cr->traits & (T_ARMOUR | T_HORNS)) ? 0.7 : 0.6);
+        gm_dot(cv, head, 0, hs, hs * 0.2, body);
+        /* Ears or horns. */
+        for (int k = -1; k <= 1; k += 2) {
+            SpVec2 base = sp_add2(head, sp_add2(sp_scale2(side, k * hs * 0.55), sp_scale2(fw, -hs * 0.2)));
+            if (cr->traits & T_HORNS) {
+                SpVec2 mid = sp_add2(base, sp_add2(sp_scale2(side, k * hs * 0.8), sp_scale2(fw, hs * 0.1)));
+                gm_beam(cv, base, mid, hs * 0.22, hs * 0.1, 0.8, gm_alpha(light, 0.9));
+                gm_beam(cv, mid, sp_add2(mid, sp_scale2(fw, hs * 0.7)), hs * 0.15, hs * 0.1, 0.5, gm_alpha(light, 0.9));
+            } else {
+                double len = (cr->traits & T_EARS) ? 1.5 : 0.75;
+                SpVec2 tip = sp_add2(base, sp_add2(sp_scale2(side, k * hs * 0.5 * len), sp_scale2(fw, -hs * 0.6 * len)));
+                SpVec2 b2 = sp_add2(base, sp_scale2(fw, hs * 0.45));
+                gm_tri(cv, base, tip, b2, gm_alpha(body, 0.85));
+                if (cr->traits & T_EARS) { gm_beam(cv, base, tip, hs * 0.12, hs * 0.1, 0.4, gm_alpha(light, 0.7)); }
+            }
+        }
+        /* Eyes: glowing (Dusk) or bright (Dawn). */
+        for (int k = -1; k <= 1; k += 2) {
+            SpVec2 e = sp_add2(head, sp_add2(sp_scale2(side, k * hs * 0.38), sp_scale2(fw, hs * 0.4)));
+            if (dusk) { gm_dot(cv, e, 0, hs * 0.2, hs * 0.25, gm_rgba(0.81f, 0.9f, 1, alpha)); }
+            else { gm_dot(cv, e, 0, hs * 0.17, hs * 0.1, gm_rgba(1, 0.75f, 0.2f, alpha)); }
+        }
+        (void)now;
+    }
+
+    static void ca_draw_pickup(GmCanvas* cv, int kind, SpVec2 p, double r, double now, float alpha) {
+        if (kind == PU_COFFEE) {
+            gm_dot(cv, p, 0, r, r * 0.3, gm_rgba(0.75f, 0.45f, 0.2f, alpha));
+            gm_dot(cv, p, r * 0.55, r * 0.75, r * 0.2, gm_rgba(1, 0.85f, 0.6f, alpha * 0.8f));
+            for (int i = -1; i <= 1; i++) {
+                double w = sin(now * 3 + i) * r * 0.15;
+                SpVec2 a = sp_add2(p, sp_v2(i * r * 0.35 + w, -r * 1.1));
+                gm_beam(cv, a, sp_add2(a, sp_v2(-w, -r * 0.6)), r * 0.08, r * 0.15, 0.1, gm_rgba(1, 0.95f, 0.85f, alpha * 0.6f));
+            }
+        } else if (kind == PU_GREENS) {
+            for (int i = 0; i < 3; i++) {
+                SpVec2 d = ca_rot(sp_v2(0, -1), (i - 1) * 0.7);
+                gm_beam(cv, p, sp_add2(p, sp_scale2(d, r * 1.3)), r * 0.45, r * 0.3, 0.4, gm_rgba(0.35f, 0.9f, 0.35f, alpha));
+            }
+        } else {
+            double pulse = 0.8 + 0.2 * sin(now * 6);
+            gm_dot(cv, p, 0, r * pulse, r * 0.4, gm_rgba(0.75f, 0.55f, 1, alpha));
+            gm_dot(cv, p, 0, r * 0.4, r * 0.3, gm_rgba(1, 1, 1, alpha * 0.8f));
+        }
+    }
+
+    static void ca_effects(GmCanvas* cv, const CaFighter* f, SpVec2 p, double s, double now, GmRandom* rnd) {
+        if (f->shield > 0) { gm_dot(cv, p, s * 1.45, s * 1.55, s * 0.3, gm_rgba(0.6f, 1, 0.9f, 0.7f)); }
+        if (f->charged > 0) {
+            for (int i = 0; i < 3; i++) {
+                double a = gm_random(rnd) * 2 * M_PI;
+                SpVec2 d = sp_v2(cos(a), sin(a));
+                SpVec2 a0 = sp_add2(p, sp_scale2(d, s * 1.1));
+                gm_beam(cv, a0, sp_add2(a0, sp_scale2(ca_rot(d, 0.6), s * 0.5)), s * 0.05, s * 0.15, 0.3, gm_rgba(1, 0.95f, 0.4f, 0.9f));
+            }
+        }
+        if (f->boost > 0) {
+            SpVec2 v = sp_v2(f->vx, f->vy);
+            double sp = sp_len2(v);
+            if (sp > 30) { gm_beam(cv, p, sp_sub2(p, sp_scale2(v, s * 2.2 / sp)), s * 0.6, s * 0.3, 0.0, gm_rgba(1, 0.6f, 0.2f, 0.45f)); }
+        }
+        if (f->bitter > 0) { gm_dot(cv, p, s * 1.2, s * 1.3, s * 0.2, gm_rgba(0.5f, 1, 0.3f, 0.5f + 0.3f * sin(now * 20))); }
+        if (f->flash > 0) { gm_dot(cv, p, 0, s * 1.1, s * 0.2, gm_rgba(1, 1, 1, 0.6f)); }
+    }
+}
+
+$cc proc configure {Jim_Obj* settings} void {
+    CaConfig c;
+    memset(&c, 0, sizeof(c));
+    #define SET(name) sp_jim_dict_double(interp, settings, #name, 0, 0, &c.name)
+    SET(maxHp); SET(radius); SET(maxSpeed); SET(responsiveness); SET(friction);
+    SET(damage); SET(range); SET(arc); SET(cooldown); SET(windup); SET(lunge); SET(knockback); SET(hitStun); SET(autoAim);
+    SET(sprintRefill); SET(refillDelay); SET(restartAt);
+    SET(spawnMin); SET(spawnMax); SET(firstSpawn); SET(lifetime); SET(pickupRadius); SET(spawnArea); SET(spawnClearance);
+    SET(weightCoffee); SET(weightGreens); SET(weightOrb); SET(foresight); SET(grabBonus);
+    SET(boostSpeed); SET(boostTime); SET(jitterTime); SET(heal); SET(recoilTime); SET(recoilSpeed); SET(recoilFriction);
+    SET(dashLunge); SET(dashDamage); SET(dashRange); SET(holdTime);
+    SET(dayNightMin); SET(dayNightMax); SET(dayNightTransition); SET(advantage); SET(firstSwitchMin); SET(firstSwitchMax);
+    SET(countdown); SET(koPause); SET(winnerTime); SET(followDeadzone); SET(followFull);
+    SET(switchReach); SET(dwellFlip); SET(readyHold); SET(readyReach); SET(textHeight);
+    #undef SET
+    c.maxOnField = gm_jim_int(interp, settings, "maxOnField", 3);
+    Jim_Obj* sp = sp_jim_dict_get(interp, settings, "sprintSpeed");
+    Jim_Obj* dr = sp_jim_dict_get(interp, settings, "sprintDrain");
+    if (!sp || !sp_jim_doubles(interp, sp, c.sprintSpeed, 3)) { FOLK_ERROR("creaturearena: sprintSpeed needs 3 numbers"); }
+    if (!dr || !sp_jim_doubles(interp, dr, c.sprintDrain, 3)) { FOLK_ERROR("creaturearena: sprintDrain needs 3 numbers"); }
+    pthread_mutex_lock(&lock);
+    config = c;
+    pthread_mutex_unlock(&lock);
+}
+
+$cc proc reset {int seed} void {
+    pthread_mutex_lock(&lock);
+    shownReset = 1;
+    ca_reset(&game, (unsigned long long)seed);
+    pthread_mutex_unlock(&lock);
+}
+
+# Sets player P's genes {flame time senses spark muscle} (tests, demos).
+$cc proc setGenes {int p Jim_Obj* genes} void {
+    double v[5];
+    if (p < 1 || p > 2 || !sp_jim_doubles(interp, genes, v, 5)) { FOLK_ERROR("creaturearena: setGenes P {5 genes}"); }
+    pthread_mutex_lock(&lock);
+    for (int i = 0; i < 5; i++) { game.side[p].genes[i] = ((int)v[i] % GENE_OPTIONS[i] + GENE_OPTIONS[i]) % GENE_OPTIONS[i]; }
+    pthread_mutex_unlock(&lock);
+}
+
+# Skips to the fight (tests, demos).
+$cc proc startFight {} void {
+    pthread_mutex_lock(&lock);
+    ca_new_fight(&game);
+    game.phase = PH_FIGHT; game.phaseT = 0;
+    pthread_mutex_unlock(&lock);
+}
+
+# Puts player P's creature at world {x y} with health HP (tests, demos).
+$cc proc place {int p double x double y double hp} void {
+    if (p < 1 || p > 2) { FOLK_ERROR("creaturearena: place P x y hp"); }
+    pthread_mutex_lock(&lock);
+    game.f[p].x = x; game.f[p].y = y; game.f[p].vx = game.f[p].vy = 0; game.f[p].hp = hp;
+    pthread_mutex_unlock(&lock);
+}
+
+# A power up of KIND (coffee greens orb) at world {x y} (tests, demos).
+$cc proc drop {char* kind double x double y} void {
+    pthread_mutex_lock(&lock);
+    if (game.nPickups < CA_PICKUPS) {
+        CaPickup* pu = &game.pickups[game.nPickups++];
+        pu->kind = strcmp(kind, "coffee") == 0 ? PU_COFFEE : strcmp(kind, "greens") == 0 ? PU_GREENS : PU_ORB;
+        pu->x = x; pu->y = y; pu->age = 0;
+    }
+    pthread_mutex_unlock(&lock);
+}
+
+# The state, for tests: {phase P winner W night N creatures {A B}
+#  f1 {x y hp boost jitter bitter charged shield ready genes}
+#  f2 {...}}.
+$cc proc state {} Jim_Obj* {
+    pthread_mutex_lock(&lock);
+    CaGame g = game;
+    pthread_mutex_unlock(&lock);
+    Jim_Obj* r = Jim_NewListObj(interp, NULL, 0);
+    sp_jim_put(interp, r, "phase", Jim_NewStringObj(interp, PHASE_NAMES[g.phase], -1));
+    sp_jim_put(interp, r, "winner", Jim_NewIntObj(interp, g.winner));
+    sp_jim_put(interp, r, "night", Jim_NewIntObj(interp, g.night));
+    Jim_Obj* names = Jim_NewListObj(interp, NULL, 0);
+    for (int p = 1; p <= 2; p++) {
+        Jim_ListAppendElement(interp, names, Jim_NewStringObj(interp, CREATURES[ca_creature(&g.side[p])].name, -1));
+    }
+    sp_jim_put(interp, r, "creatures", names);
+    for (int p = 1; p <= 2; p++) {
+        CaFighter* f = &g.f[p];
+        Jim_Obj* l = Jim_NewListObj(interp, NULL, 0);
+        double v[8] = {f->x, f->y, f->hp, f->boost, f->jitter, f->bitter, f->charged, f->shield};
+        for (int i = 0; i < 8; i++) { Jim_ListAppendElement(interp, l, Jim_NewDoubleObj(interp, v[i])); }
+        Jim_ListAppendElement(interp, l, Jim_NewIntObj(interp, g.side[p].ready));
+        Jim_Obj* genes = Jim_NewListObj(interp, NULL, 0);
+        for (int i = 0; i < 5; i++) { Jim_ListAppendElement(interp, genes, Jim_NewIntObj(interp, g.side[p].genes[i])); }
+        Jim_ListAppendElement(interp, l, genes);
+        sp_jim_put(interp, r, p == 1 ? "f1" : "f2", l);
+    }
+    return r;
+}
+
+# Advances the game to `now` (s) and draws it. map: the table map;
+# poses: the `hand ID has pose POSE` poses; viewport and surfaceToClip:
+# the display canvas's ("" draws nothing). Returns {phase NAME
+# creatures {A B} winner W changed 0|1 draws {PIPELINE INSTANCES ...}
+# labels {{{u v} radians px {text} {r g b a}} ...} notes {{n v s} ...}
+# hits {{P DAMAGE} ...} won P}.
+$cc proc step {double now Jim_Obj* map Jim_Obj* poses
+               Jim_Obj* viewport Jim_Obj* surfaceToClip} Jim_Obj* {
+    SpTableMap M;
+    if (!sp_jim_table_map(interp, map, &M)) { FOLK_ERROR("creaturearena: not a table map"); }
+    SpVec2 fp[GM_POLY_MAX];
+    int nf = sp_jim_vec2s(interp, sp_jim_dict_get(interp, map, "footprint"), fp, GM_POLY_MAX);
+    GmHand hands[GM_MAX_HANDS];
+    int nh = gm_read_hands(interp, poses, hands, GM_MAX_HANDS);
+    GmCanvas canvas;
+    gm_canvas_init(interp, &canvas, &M, viewport, surfaceToClip);
+    GmNotes notes; notes.count = 0;
+    static CaLabels labels, shownLabels;
+    labels.n = 0; labels.s[0] = 0;
+    int hits[4], nHits = 0, wonBy = 0;
+
+    pthread_mutex_lock(&lock);
+    CaGame* g = &game;
+    CaConfig* c = &config;
+    CaLayout L;
+    if (ca_layout(fp, nf, &L)) {
+        double dt = g->t > 0 ? now - g->t : 0;
+        if (dt < 0) { dt = 0; }
+        if (dt > 0.05) { dt = 0.05; }
+        g->t = now;
+        g->phaseT += dt;
+        double s = c->radius * L.k;                /* a creature's body radius, m */
+
+        /* Hands: whose they are, and which just began a pinch. */
+        int owner[GM_MAX_HANDS], pinchStart[GM_MAX_HANDS];
+        for (int i = 0; i < nh; i++) {
+            owner[i] = ca_owner(&L, &hands[i]);
+            int slot = -1, free = -1;
+            for (int m = 0; m < CA_HANDMEM; m++) {
+                if (g->hand[m].id == hands[i].id && g->hand[m].seen > 0) { slot = m; break; }
+                if (free < 0 && (g->hand[m].seen <= 0 || now - g->hand[m].seen > 2)) { free = m; }
+            }
+            int was = 0;
+            if (slot >= 0) { was = g->hand[slot].pinch; } else { slot = free >= 0 ? free : 0; }
+            pinchStart[i] = hands[i].pinching && !was;
+            g->hand[slot].id = hands[i].id; g->hand[slot].pinch = hands[i].pinching; g->hand[slot].seen = now;
+        }
+
+        /* ----- pick: switches and Ready ----- */
+        if (g->phase == PH_PICK) {
+            for (int p = 1; p <= 2; p++) {
+                CaSide* sd = &g->side[p];
+                for (int i = 0; i < 5; i++) {
+                    SpVec2 at = ca_switch_at(&L, p, i);
+                    int touched = 0, pinched = 0;
+                    for (int h = 0; h < nh; h++) {
+                        if (owner[h] != p) { continue; }
+                        int k0 = hands[h].nc > 1 ? 1 : 0;
+                        for (int k = k0; k < hands[h].nc; k++) {
+                            if (sp_dist2(gm_collider_at(&hands[h], k, now, 0.05), at) < c->switchReach) { touched = 1; }
+                        }
+                        if (pinchStart[h] && hands[h].nc > 2 &&
+                            sp_dist2(sp_scale2(sp_add2(hands[h].cp[1], hands[h].cp[2]), 0.5), at) < c->switchReach * 1.4) { pinched = 1; }
+                    }
+                    int flip = pinched;
+                    if (touched) {
+                        sd->dwell[i] += dt;
+                        if (!sd->latched[i] && sd->dwell[i] >= c->dwellFlip) { flip = 1; }
+                    } else { sd->dwell[i] = 0; sd->latched[i] = 0; }
+                    if (flip && !sd->latched[i]) {
+                        sd->genes[i] = (sd->genes[i] + 1) % GENE_OPTIONS[i];
+                        sd->latched[i] = 1; sd->ready = 0; sd->readyP = 0;
+                        gm_note(&notes, gm_scale_note((double)i / 4), 60, 0.2);
+                    }
+                }
+                SpVec2 rp = ca_ready_at(&L, p);
+                int palm = 0;
+                for (int h = 0; h < nh; h++) {
+                    if (owner[h] == p && sp_dist2(gm_collider_at(&hands[h], 0, now, 0.05), rp) < c->readyReach) { palm = 1; }
+                }
+                if (!sd->ready) {
+                    sd->readyP = palm ? sd->readyP + dt / c->readyHold : fmax(0, sd->readyP - dt);
+                    if (sd->readyP >= 1) { sd->ready = 1; sd->readyP = 1; gm_note(&notes, 67, 70, 0.3); gm_note(&notes, 74, 60, 0.3); }
+                }
+            }
+            if (g->side[1].ready && g->side[2].ready) {
+                ca_new_fight(g);
+                g->phase = PH_COUNTDOWN; g->phaseT = 0;
+                gm_note(&notes, 60, 70, 0.3);
+            }
+        } else if (g->phase == PH_COUNTDOWN && g->phaseT >= c->countdown) {
+            g->phase = PH_FIGHT; g->phaseT = 0;
+            gm_note(&notes, 72, 90, 0.5); gm_note(&notes, 76, 80, 0.5); gm_note(&notes, 79, 80, 0.5);
+        } else if (g->phase == PH_KO && g->phaseT >= c->koPause) {
+            g->phase = PH_WON; g->phaseT = 0; wonBy = g->winner;
+            gm_note(&notes, 72, 90, 1.0); gm_note(&notes, 76, 80, 1.0); gm_note(&notes, 79, 80, 1.0); gm_note(&notes, 84, 70, 1.0);
+        } else if (g->phase == PH_WON && g->phaseT >= c->winnerTime) {
+            g->phase = PH_PICK; g->phaseT = 0; g->winner = 0;
+            for (int p = 1; p <= 2; p++) { g->side[p].ready = 0; g->side[p].readyP = 0; }
+            ca_new_fight(g);
+        }
+
+        /* ----- fight: hands lead the creatures ----- */
+        int moving = g->phase == PH_FIGHT || g->phase == PH_KO;
+        if (moving) {
+            double slow = g->phase == PH_KO ? 0.25 : 1.0;   /* the knockout in slow motion */
+            double h = dt * slow;
+            for (int p = 1; p <= 2; p++) {
+                CaFighter* f = &g->f[p];
+                f->intent = sp_v2(0, 0); f->sprintHeld = 0; f->hasHand = 0;
+                double best = 1e9;
+                for (int k = 0; k < nh; k++) {
+                    if (owner[k] != p) { continue; }
+                    SpVec2 target = ca_table_to_world(&L, gm_collider_at(&hands[k], 0, now, 0.05));
+                    SpVec2 d = sp_v2(target.x - f->x, target.y - f->y);
+                    double dl = sp_len2(d);
+                    if (dl < best) {
+                        best = dl; f->hasHand = 1;
+                        double amount = dl < c->followDeadzone ? 0 : fmin(1, (dl - c->followDeadzone) / c->followFull);
+                        f->intent = dl > 0 ? sp_scale2(d, amount / dl) : sp_v2(0, 0);
+                        f->sprintHeld = hands[k].fist;
+                    }
+                    if (pinchStart[k] && g->phase == PH_FIGHT) { f->attackPressed = 1; }
+                }
+            }
+            if (g->phase == PH_FIGHT) {
+                g->cycleIn -= h;
+                if (g->cycleIn <= 0) {
+                    g->night = !g->night;
+                    g->cycleIn = ca_between(g, c->dayNightMin, c->dayNightMax);
+                    gm_note(&notes, g->night ? 57 : 69, 50, 1.0);
+                }
+                ca_spawn(g, h);
+            }
+            double target = g->night ? 1 : 0;
+            double step = h / fmax(0.1, c->dayNightTransition);
+            g->nightness += fmax(-step, fmin(step, target - g->nightness));
+            for (int p = 1; p <= 2; p++) { ca_move(g, p, h); }
+            for (int p = 1; p <= 2; p++) { if (g->phase == PH_FIGHT || g->phase == PH_KO) { ca_attack(g, p, h, &notes, hits, &nHits); } }
+            ca_separate(&g->f[1], &g->f[2]);
+            ca_keep_in(&g->f[1]); ca_keep_in(&g->f[2]);
+            if (g->phase == PH_FIGHT) { ca_collect(g, &notes); }
+        }
+
+        /* ----------------------------- drawing ----------------------------- */
+        GmColor dayEdge = ca_hex(0x7fe7ff, 1), warm = ca_hex(0xffd27a, 1), cool = ca_hex(0x6f7cff, 1);
+        GmColor edge = gm_mix(gm_mix(dayEdge, warm, 0.45f), gm_mix(dayEdge, cool, 0.55f), (float)g->nightness);
+        double pulse = 0.75 + 0.25 * sin(now * 2 * M_PI * 0.35);
+        #define RING 36
+        for (int i = 0; i < RING; i++) {
+            double a0 = i * 2 * M_PI / RING, a1 = (i + 1) * 2 * M_PI / RING;
+            gm_beam(&canvas, sp_add2(L.centre, sp_v2(cos(a0) * L.R, sin(a0) * L.R)),
+                    sp_add2(L.centre, sp_v2(cos(a1) * L.R, sin(a1) * L.R)), 0.004, 0.003 * pulse, 1.0, gm_alpha(edge, 0.9f));
+        }
+        /* The sun or the moon, beside the ring on both long sides. */
+        for (int k = -1; k <= 1; k += 2) {
+            SpVec2 sideDir = gm_unit(sp_sub2(L.mid[2], L.mid[1]), sp_v2(1, 0));
+            SpVec2 across = sp_v2(-sideDir.y, sideDir.x);
+            SpVec2 q = sp_add2(L.centre, sp_scale2(across, k * fmin(L.R + 0.035, L.halfEdge - 0.03)));
+            float n = (float)g->nightness;
+            /* A full sun by day, a thin pale ring (the moon) by night. */
+            gm_dot(&canvas, q, 0.011 * n, 0.016, 0.006, gm_mix(gm_rgba(1, 0.82f, 0.3f, 0.9f), gm_rgba(0.8f, 0.88f, 1, 0.9f), n));
+        }
+
+        char buf[160];
+        for (int p = 1; p <= 2; p++) {
+            CaSide* sd = &g->side[p];
+            int idx = ca_creature(sd);
+            const CaCreature* cr = &CREATURES[idx];
+            GmColor pc = gm_player_color(p);
+            int dusk = sd->genes[1] == 0;
+            if (g->phase == PH_PICK) {
+                for (int i = 0; i < 5; i++) {
+                    SpVec2 at = ca_switch_at(&L, p, i);
+                    GmColor gc = ca_hex(GENE_COLORS[i][sd->genes[i]], 1);
+                    gm_dot(&canvas, at, 0, 0.022, 0.006, gc);
+                    if (sd->dwell[i] > 0 && !sd->latched[i]) {
+                        double prog = fmin(1, sd->dwell[i] / c->dwellFlip);
+                        gm_dot(&canvas, at, 0.031, 0.031 + 0.006 * prog, 0.008, gm_rgba(1, 1, 1, 0.8f));
+                    }
+                }
+                SpVec2 pv = ca_preview_at(&L, p);
+                ca_draw_creature(&canvas, idx, pv, L.in[p], s, now, 1.0f, dusk);
+                /* One label: the creature and its genes, in the switches' order
+                 * (one text draw, not six: each draw costs the GPU). */
+                snprintf(buf, sizeof(buf), "%s\n%s  %s  %s  %s  %s", cr->name,
+                         GENE_NAMES[0][sd->genes[0]], GENE_NAMES[1][sd->genes[1]], GENE_NAMES[2][sd->genes[2]],
+                         GENE_NAMES[3][sd->genes[3]], GENE_NAMES[4][sd->genes[4]]);
+                ca_label(&labels, &L, &M, p, ca_at(&L, p, 0.045, 0), buf, c->textHeight * 0.85, ca_hex(cr->glow, 1));
+                SpVec2 rp = ca_ready_at(&L, p);
+                /* Ready: a ring in your colour that fills while your palm is on it. */
+                double fill = sd->ready ? 1 : sd->readyP;
+                gm_dot(&canvas, rp, fill > 0 ? 0.036 * (1 - fill) : 0.034, 0.038, 0.005, gm_alpha(pc, sd->ready ? 1.0f : 0.7f));
+                ca_label(&labels, &L, &M, p, ca_at(&L, p, 0.17, ca_switch_spacing(&L) * 1.3),
+                         sd->ready ? "Ready!" : "Palm here\nwhen ready", c->textHeight * 0.75, gm_rgba(1, 1, 1, 0.85f));
+            } else {
+                /* Health and stamina along your end, your creature's name, its state. */
+                CaFighter* f = &g->f[p];
+                double half = fmin(0.25, L.halfEdge * 0.6), frac = f->hp / c->maxHp;
+                SpVec2 a = ca_at(&L, p, 0.06, -half), b = ca_at(&L, p, 0.06, half);
+                gm_beam(&canvas, a, b, 0.008, 0, 1.0, gm_rgba(1, 1, 1, 0.15f));
+                if (frac > 0) { gm_beam(&canvas, a, sp_add2(a, sp_scale2(sp_sub2(b, a), frac)), 0.008, 0.003, 1.0, gm_alpha(pc, 0.95f)); }
+                SpVec2 sa = ca_at(&L, p, 0.085, -half);
+                gm_beam(&canvas, sa, sp_add2(sa, sp_scale2(sp_sub2(b, a), f->stamina)), 0.004, 0.001, 1.0,
+                        f->winded ? gm_rgba(1, 0.3f, 0.3f, 0.7f) : gm_rgba(1, 1, 1, 0.5f));
+                const char* st = f->jitter > 0 ? "Jitters!" : f->bitter > 0 ? "Bitter!" : f->charged > 0 ? "Lightning ready"
+                               : f->shield > 0 ? "Shield up" : f->boost > 0 ? "Coffee rush" : f->winded ? "Winded" : "";
+                const char* edgeNote = g->phase == PH_FIGHT && ca_time_edge(g, p) ? (dusk ? "Night bite +40%" : "Day bite +40%") : "";
+                /* One label a player: name and health, then what is happening to it. */
+                snprintf(buf, sizeof(buf), "%s  %d%s%s%s%s", cr->name, (int)round(f->hp),
+                         st[0] || edgeNote[0] ? "\n" : "", st, st[0] && edgeNote[0] ? "  " : "", edgeNote);
+                ca_label(&labels, &L, &M, p, ca_at(&L, p, 0.14, 0), buf, c->textHeight * 0.9, ca_hex(cr->glow, 1));
+            }
+        }
+
+        if (g->phase != PH_PICK) {
+            /* Power ups, and a Keen creature's early sense of the next one. */
+            for (int i = 0; i < g->nPickups; i++) {
+                CaPickup* pu = &g->pickups[i];
+                float a = pu->age > c->lifetime - 2 ? (fmod(pu->age, 0.3) < 0.15 ? 0.3f : 1.0f) : 1.0f;
+                ca_draw_pickup(&canvas, pu->kind, ca_world_to_table(&L, pu->x, pu->y), c->pickupRadius * L.k * 0.8, now, a);
+            }
+            if (g->hasPending && (g->side[1].genes[2] == 0 || g->side[2].genes[2] == 0)) {
+                gm_dot(&canvas, ca_world_to_table(&L, g->pending.x, g->pending.y), 0.012, 0.015, 0.01,
+                       gm_rgba(0.4f, 1, 0.9f, 0.35f + 0.2f * (float)sin(now * 8)));
+            }
+            for (int p = 1; p <= 2; p++) {
+                CaFighter* f = &g->f[p];
+                int idx = ca_creature(&g->side[p]);
+                SpVec2 at = ca_world_to_table(&L, f->x, f->y);
+                if (f->jitter > 0) { at = sp_add2(at, sp_v2((gm_random(&g->rnd) - 0.5) * 0.006, (gm_random(&g->rnd) - 0.5) * 0.006)); }
+                double bob = 1 + 0.06 * fabs(sin(f->bob * M_PI));
+                float alpha = f->hp <= 0 ? 0.35f : 1.0f;
+                /* Whose it is: a short bar of your colour under it, across your view. */
+                SpVec2 under = sp_add2(at, sp_scale2(L.in[p], -s * 1.35));
+                gm_beam(&canvas, sp_add2(under, sp_scale2(L.right[p], -s * 0.8)), sp_add2(under, sp_scale2(L.right[p], s * 0.8)),
+                        0.006, 0.002, 1.0, gm_alpha(gm_player_color(p), 0.9f * alpha));
+                ca_draw_creature(&canvas, idx, at, f->facing, s * bob, now, alpha, g->side[p].genes[1] == 0);
+                ca_effects(&canvas, f, at, s, now, &g->rnd);
+                if (f->swingT >= 0) {
+                    SpVec2 tip = sp_add2(at, sp_scale2(f->swingDir, s * 2.2));
+                    gm_beam(&canvas, sp_add2(at, sp_scale2(f->swingDir, s)), tip, s * 0.35, s * 0.3, 0.1,
+                            f->swingDash > 0 ? gm_rgba(1, 0.95f, 0.4f, 0.9f) : gm_alpha(ca_hex(CREATURES[idx].glow, 1), 0.7f));
+                }
+            }
+            /* Big words, facing each player. */
+            const char* big = NULL;
+            if (g->phase == PH_COUNTDOWN) {
+                int n = (int)ceil((c->countdown - g->phaseT) / (c->countdown / 3));
+                snprintf(buf, sizeof(buf), "%d", n < 1 ? 1 : n > 3 ? 3 : n);
+                big = buf;
+            } else if (g->phase == PH_FIGHT && g->phaseT < 0.8) { big = "Fight!"; }
+            else if (g->phase == PH_WON && g->winner) {
+                snprintf(buf, sizeof(buf), "%s wins!", CREATURES[ca_creature(&g->side[g->winner])].name);
+                big = buf;
+            }
+            if (big) {
+                for (int p = 1; p <= 2; p++) {
+                    ca_label(&labels, &L, &M, p, ca_at(&L, p, 0.25, 0), big, c->textHeight * 2.0,
+                             g->phase == PH_WON ? gm_player_color(g->winner) : gm_rgba(1, 1, 1, 0.95f));
+                }
+            }
+        }
+    }
+    int pub[4] = {g->phase, ca_creature(&g->side[1]), ca_creature(&g->side[2]), g->winner};
+    int changed = 0;
+    for (int i = 0; i < 4; i++) { if (pub[i] != g->published[i]) { changed = 1; g->published[i] = pub[i]; } }
+    if (shownReset) { shownLabels.n = -1; shownReset = 0; }
+    int labelsChanged = canvas.on && (labels.n != shownLabels.n || memcmp(labels.s, shownLabels.s, labels.n) != 0);
+    if (labelsChanged) { shownLabels = labels; }
+    pthread_mutex_unlock(&lock);
+
+    Jim_Obj* names = Jim_NewListObj(interp, NULL, 0);
+    Jim_ListAppendElement(interp, names, Jim_NewStringObj(interp, CREATURES[pub[1]].name, -1));
+    Jim_ListAppendElement(interp, names, Jim_NewStringObj(interp, CREATURES[pub[2]].name, -1));
+    Jim_Obj* hl = Jim_NewListObj(interp, NULL, 0);
+    for (int i = 0; i < nHits; i++) {
+        Jim_Obj* e = Jim_NewListObj(interp, NULL, 0);
+        Jim_ListAppendElement(interp, e, Jim_NewIntObj(interp, hits[i] / 1000));
+        Jim_ListAppendElement(interp, e, Jim_NewIntObj(interp, hits[i] % 1000));
+        Jim_ListAppendElement(interp, hl, e);
+    }
+    Jim_Obj* result = Jim_NewListObj(interp, NULL, 0);
+    sp_jim_put(interp, result, "phase", Jim_NewStringObj(interp, PHASE_NAMES[pub[0]], -1));
+    sp_jim_put(interp, result, "creatures", names);
+    sp_jim_put(interp, result, "winner", Jim_NewIntObj(interp, pub[3]));
+    sp_jim_put(interp, result, "changed", Jim_NewIntObj(interp, changed));
+    sp_jim_put(interp, result, "draws", gm_canvas_result(interp, &canvas));
+    sp_jim_put(interp, result, "labels", Jim_NewStringObj(interp, labels.s, labels.n));
+    sp_jim_put(interp, result, "labelsChanged", Jim_NewIntObj(interp, labelsChanged));
+    sp_jim_put(interp, result, "notes", gm_notes_result(interp, &notes));
+    sp_jim_put(interp, result, "hits", hl);
+    sp_jim_put(interp, result, "won", Jim_NewIntObj(interp, wonBy));
+    return result;
+}
+set arenaLib [$cc compile]
+$arenaLib configure $ARENA_SETTINGS
+$arenaLib reset 0
+
+Claim the creature arena library is $arenaLib
+
+# The table menu: Games > Creature Arena.
+Claim table menu item creaturearena with label {Creature Arena} color {0.50 0.91 1.00 1} order 91 submenu games \
+    toggles {creaturearena is played}
+
+# One game however many wish for it; it starts fresh when nobody does.
+When the collected results for [list /someone/ wishes creaturearena is played] are /wishes/ {
+    if {[llength $wishes] > 0} {
+        Hold! -on $arenaThis -key {arena wanted} Claim creaturearena is wanted
+    } else {
+        Hold! -on $arenaThis -key {arena wanted} {}
+        Hold! -on $arenaThis -key {arena state} {}
+        $arenaLib reset 0
+    }
+}
+
+# Perception only while it is played.
+When creaturearena is wanted {
+    Claim game creaturearena is running
+    Wish hands are tracked
+    Wish hands are tracked with profile [dict get $ARENA_SETTINGS trackingProfile]
+    Wish cameras use the hands view
+    Wish the inbox is out of the way
+}
+
+# Once a frame of the display, on the table camera's map only. One
+# atomic version per step, so the display never shows two steps.
+When creaturearena is wanted &\
+     camera /camera/ is the table camera for display /display/ &\
+     the table map from camera /camera/ to display /display/ is /map/ {
+
+    When -atomicallyWithKey [list $arenaThis creaturearena $display] the frame clock time is /t/ {
+        set poses [lmap r [Query! hand /h/ has pose /pose/] { dict get $r pose }]
+        set viewport ""; set surfaceToClip ""; set canvas ""
+        set canvases [Query! $display has canvas /canvas/ with /...options/]
+        set projections [Query! $display has canvas projection /s2c/]
+        if {[llength $canvases] > 0 && [llength $projections] > 0} {
+            set c [lindex $canvases 0]
+            set canvas [dict get $c canvas]
+            set viewport [list [dict get $c options width] [dict get $c options height]]
+            set surfaceToClip [dict get [lindex $projections 0] s2c]
+        }
+
+        set result [$arenaLib step $t $map $poses $viewport $surfaceToClip]
+
+        if {$canvas ne ""} {
+            dict for {pipeline instances} [dict get $result draws] {
+                Wish the GPU draws pipeline $pipeline onto canvas $canvas \
+                    with instances $instances layer [dict get $ARENA_LAYERS $pipeline]
+            }
+        }
+        # Labels change rarely (a flipped gene, a hit, the countdown), so
+        # they are held when they change, not wished every frame.
+        if {[dict get $result labelsChanged]} {
+            Hold! -on $arenaThis -key [list arena labels $display] \
+                Claim the creature arena labels on $display are [dict get $result labels]
+        }
+        foreach note [dict get $result notes] {
+            lassign $note n v s
+            Notify: game note $n velocity $v for $s
+        }
+        foreach hit [dict get $result hits] {
+            lassign $hit p damage
+            Notify: creature arena hit on player $p for $damage
+        }
+        if {[dict get $result won] > 0} {
+            Notify: creature arena won by player [dict get $result won]
+        }
+        # The state only when it changes (rule 6: never a claim per frame).
+        if {[dict get $result changed]} {
+            Hold! -on $arenaThis -key {arena state} \
+                Claim the creature arena is [dict get $result phase] with creatures [dict get $result creatures] \
+                    winner [dict get $result winner]
+        }
+    }
+}
+
+# The labels, drawn while they are held (and the game is played).
+When creaturearena is wanted & the creature arena labels on /display/ are /labels/ {
+    foreach label $labels {
+        lassign $label position radians scale text color
+        Wish to draw text onto $display with position $position text $text \
+            scale $scale radians $radians color $color anchor center layer $ARENA_TEXT_LAYER
+    }
+}

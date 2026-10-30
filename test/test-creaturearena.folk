@@ -1,0 +1,154 @@
+# test-creaturearena.folk -- off-table test of creaturearena.folk on the
+# made-up rig (kits/testing/lib-test.tcl), with hands built from
+# straight lines:
+#
+#   it starts on the pick screen and draws both players' switches;
+#   a fingertip held on a switch flips that gene;
+#   both palms held on Ready start the countdown;
+#   a hand leads its creature, a pinch bites the other creature;
+#   coffee, greens and orbs do what each creature's genes say;
+#   the last bite knocks out the other creature and wins.
+#
+# Run from the daydream (folk) directory with a built folk:
+#     APP_DIR=path/to/app ./folk path/to/app/test/test-creaturearena.folk
+# (`dream test` does this.) Exits 0 and prints PASS when every check holds.
+
+source kits/testing/lib-test.tcl
+source kits/games/test/lib-games-test.tcl
+
+set appDir [expr {[info exists ::env(APP_DIR)] ? $::env(APP_DIR) : "."}]
+loadSpatialPrograms
+loadProgram kits/spatial/hands.folk
+loadProgram kits/games/games.folk
+loadProgram $appDir/creaturearena.folk
+assertRig
+mockFrameClock
+Assert! when {Wish creaturearena is played} with environment [list [list this test-creaturearena]]
+
+set camera $::rigCamera
+set display $::rigDisplay
+set lib [dict get [waitFor {the spatial library is /lib/} 60] lib]
+set map [dict get [waitFor [list the table map from camera $camera to display $display is /map/] 20] map]
+set arena [dict get [waitFor {the creature arena library is /lib/} 30] lib]
+mockCanvas $display
+warmUpHands $lib $map $camera
+
+Assert! when {
+    Subscribe: creature arena hit on player /p/ for /d/ {
+        Hold! -on test-events -key [list hit [clock microseconds]] Claim test saw a hit on $p for $d
+    }
+    Subscribe: creature arena won by player /p/ {
+        Hold! -on test-events -key won Claim test saw a win by $p
+    }
+} with environment [list [list this test-events]]
+
+# The rig's field is 1.5 x 0.86 m: player 1 at x = 0, player 2 at x = 1.5.
+# The arena's centre is (0.75, 0.43) and its radius 0.396 m, 520 world
+# units: k m per unit.
+set k [expr {0.396 / 520.0}]
+proc world {x y} { set k [expr {0.396 / 520.0}]; list [expr {0.75 + $x * $k}] [expr {0.43 + $y * $k}] }
+
+# A hand from player P's end (its arm comes from there), with its
+# `which` point (palm, index or pinch) at `target`.
+proc handFrom {p id mode which target} {
+    set angle [expr {$p == 1 ? 1.5707963 : -1.5707963}]
+    # wristFor gives the wrist for angle 0; turn its offset with the hand.
+    lassign [vsub {0 0} [wristFor $mode $which {0 0}]] dx dy
+    set c [expr {cos($angle)}]; set s [expr {sin($angle)}]
+    set wrist [list [expr {[lindex $target 0] - ($c * $dx - $s * $dy)}] \
+                    [expr {[lindex $target 1] - ($s * $dx + $c * $dy)}]]
+    dict create id $id mode $mode at $wrist angle $angle
+}
+
+proc st {arena key} { dict get [$arena state] $key }
+
+check {[waitFor {the creature arena is pick with creatures /c/ winner 0} 10] ne ""} "it starts on the pick screen"
+sleep 0.2
+check {[drawnCount games-dot 10] >= 10} "it draws the switches and the creatures"
+check {[waitFor [list the creature arena labels on $display are /l/] 5] ne ""} "it labels them"
+
+# 1. A fingertip held on player 1's Flame switch, at (0.10, 0.21), flips it.
+set before [lindex [st $arena f1] 9 0]
+set spec [handFrom 1 21 open index {0.10 0.21}]
+feedHands $lib $map $camera [list $spec] 55
+removeHand 21
+check {[lindex [st $arena f1] 9 0] != $before} "a fingertip on the Flame switch flipped it: [st $arena f1]"
+waitForNone {hand 21 has pose /p/} 2
+
+# 2. Both palms on Ready: (0.23, 0.573) and (1.27, 0.287).
+set specs [list [handFrom 1 22 open palm {0.23 0.573}] [handFrom 2 23 open palm {1.27 0.287}]]
+feedHands $lib $map $camera $specs 90
+removeHand 22; removeHand 23
+check {[st $arena phase] in {countdown fight}} "both palms on Ready start the fight: [st $arena phase]"
+waitForNone {hand 22 has pose /p/} 2
+waitForNone {hand 23 has pose /p/} 2
+
+# The fight: Sunsniffer (Blaze Dawn Keen Crackling, Sprinter) for player 1,
+# Mooncoil (Ember Dusk Bold Still, Endurance) for player 2.
+$arena setGenes 1 {0 1 0 0 0}
+$arena setGenes 2 {1 0 1 1 2}
+$arena startFight
+check {[waitFor {the creature arena is fight with creatures {Sunsniffer Mooncoil} winner 0} 3] ne ""} \
+    "the fight is held: [Query! the creature arena is /p/ with creatures /c/ winner /w/]"
+
+# 3. A hand leads its creature: player 1's palm at the centre, its creature to the left.
+$arena place 1 -250 0 150
+$arena place 2 250 200 150
+set spec [handFrom 1 24 open palm [world 0 0]]
+feedHands $lib $map $camera [list $spec] 40
+removeHand 24
+check {[lindex [st $arena f1] 0] > -150} "player 1's creature ran towards the hand: [st $arena f1]"
+waitForNone {hand 24 has pose /p/} 2
+
+# 4. A pinch bites: the creatures side by side, player 1 pinches above its own.
+$arena place 1 -70 0 150
+$arena place 2 70 0 150
+set open [handFrom 1 25 open palm [world -70 0]]
+set pinch [handFrom 1 25 pinch palm [world -70 0]]
+feedHands $lib $map $camera [list $open] 10
+feedHands $lib $map $camera [list $pinch] 15
+removeHand 25
+check {[lindex [st $arena f2] 2] < 150} "the pinch bit player 2's creature: [st $arena f2]"
+check {[waitFor {test saw a hit on 2 for /d/} 2] ne ""} "and told it as an event"
+waitForNone {hand 25 has pose /p/} 2
+
+# 5. The genes decide the power ups.
+$arena place 1 -300 0 150
+$arena place 2 300 0 150
+$arena drop coffee -300 0
+sleep 0.2
+check {[lindex [st $arena f1] 3] > 0} "coffee boosts a Blaze creature: [st $arena f1]"
+$arena drop coffee 300 0
+sleep 0.2
+check {[lindex [st $arena f2] 4] > 0} "coffee gives an Ember creature the jitters: [st $arena f2]"
+$arena place 1 -300 -200 150
+$arena drop greens -300 -200
+sleep 0.2
+check {[lindex [st $arena f1] 5] > 0} "bitter greens send a Keen creature reeling: [st $arena f1]"
+$arena place 2 300 -200 150
+$arena drop orb 300 -200
+sleep 0.2
+check {[lindex [st $arena f2] 7] > 0} "an energy orb shields a Still creature: [st $arena f2]"
+$arena place 2 300 200 140
+$arena drop greens 300 200
+sleep 0.2
+check {[lindex [st $arena f2] 2] > 140} "bitter greens heal a Bold creature: [st $arena f2]"
+$arena place 1 -300 200 150
+$arena drop orb -300 200
+sleep 0.2
+check {[lindex [st $arena f1] 6] > 0} "an energy orb charges a Crackling creature: [st $arena f1]"
+
+# 6. A knockout: player 2's creature on its last health, no shield.
+$arena startFight
+$arena setGenes 2 {1 0 1 0 2}
+$arena place 1 -70 0 150
+$arena place 2 70 0 3
+sleep 0.3
+feedHands $lib $map $camera [list $open] 10
+feedHands $lib $map $camera [list $pinch] 15
+removeHand 25
+check {[st $arena phase] in {ko won}} "the last bite knocks player 2's creature out: [st $arena phase] [st $arena f2]"
+check {[waitFor {test saw a win by 1} 4] ne ""} "player 1 wins"
+check {[waitFor {the creature arena is won with creatures /c/ winner 1} 2] ne ""} "the win is held"
+
+finish
