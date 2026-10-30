@@ -1,0 +1,642 @@
+[
+ {
+  "code": "X43-4NA",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": null
+  }
+ },
+ {
+  "code": "9NV-2T8",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "M8N-YY6",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "XTF-X53",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "JSU-BZ5",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": null
+  }
+ },
+ {
+  "code": "WCN-A67",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "8XF-8BF",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "KH9-6GV",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "NPG-MXH",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": null
+  }
+ },
+ {
+  "code": "Z9A-K4K",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "BU4-H9U",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "PDW-FEX",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "AD9-VAG",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": null
+  }
+ },
+ {
+  "code": "MY3-TFR",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "YHV-RMU",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "B4P-PS9",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "D9X-682",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": null
+  }
+ },
+ {
+  "code": "QUR-4DA",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "3EJ-2JQ",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "DZB-YQG",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "ZYQ-DK7",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": null
+  }
+ },
+ {
+  "code": "CJH-BRM",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "Q5B-9W2",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "2Q5-83X",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "4VC-PHK",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": null
+  }
+ },
+ {
+  "code": "FF6-MPZ",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "SZY-JUX",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "5KS-GZC",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "RK5-WVW",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": null
+  }
+ },
+ {
+  "code": "45X-V2N",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "EQR-T7W",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "SAJ-RCB",
+  "axes": {
+   "flame": "Blaze",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "UFT-7TF",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": null
+  }
+ },
+ {
+  "code": "72M-5YV",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "HME-45S",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "V78-2A7",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "G6K-F6E",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": null
+  }
+ },
+ {
+  "code": "TRD-DBP",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "6B7-BG4",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "GVZ-9N2",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "K38-R4T",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": null
+  }
+ },
+ {
+  "code": "WN2-P93",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "97U-ME6",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "KSN-JKE",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "7RZ-YFN",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": null
+  }
+ },
+ {
+  "code": "JBT-WM3",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "VWM-USB",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "8GE-SXR",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dawn",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "ANP-9DH",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": null
+  }
+ },
+ {
+  "code": "N8G-7JX",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "YTA-5Q7",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "BD4-3VM",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Crackling",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "XCF-GRU",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": null
+  }
+ },
+ {
+  "code": "9X9-EW4",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "MH3-D36",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "Y3V-B89",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Bold",
+   "spark": "Still",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "294-SP8",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": null
+  }
+ },
+ {
+  "code": "CTW-QU6",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "QDQ-NZK",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "2YH-M6G",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Crackling",
+   "muscle": "Endurance"
+  }
+ },
+ {
+  "code": "NXW-227",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": null
+  }
+ },
+ {
+  "code": "ZHP-Y75",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Sprinter"
+  }
+ },
+ {
+  "code": "C4G-WCJ",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Mixed"
+  }
+ },
+ {
+  "code": "PPA-UHT",
+  "axes": {
+   "flame": "Ember",
+   "time": "Dusk",
+   "senses": "Keen",
+   "spark": "Still",
+   "muscle": "Endurance"
+  }
+ }
+]

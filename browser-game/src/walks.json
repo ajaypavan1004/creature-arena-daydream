@@ -1,0 +1,37 @@
+{
+ "Emberjaw": {
+  "frames": 34,
+  "cols": 8,
+  "fw": 585,
+  "fh": 269,
+  "fps": 24
+ },
+ "Goldenhush": {
+  "frames": 30,
+  "cols": 8,
+  "fw": 706,
+  "fh": 421,
+  "fps": 24
+ },
+ "Moonwhisker": {
+  "frames": 32,
+  "cols": 8,
+  "fw": 721,
+  "fh": 505,
+  "fps": 24
+ },
+ "Sparksnout": {
+  "frames": 20,
+  "cols": 8,
+  "fw": 421,
+  "fh": 238,
+  "fps": 24
+ },
+ "Starmane": {
+  "frames": 18,
+  "cols": 8,
+  "fw": 650,
+  "fh": 460,
+  "fps": 24
+ }
+}

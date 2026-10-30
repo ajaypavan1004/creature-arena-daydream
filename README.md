@@ -1,5 +1,10 @@
 # Creature Arena on the Daydream table
 
+This branch (`browser-game`) also has the full browser game in `browser-game/`, with the
+creatures' paintings, walk animations, co-op Hatchling Expedition, computer opponent and
+network play. To run it: `cd browser-game`, `npm install`, `npm run dev`, then open the
+link it prints. Its own README has the details.
+
 Creature Arena's fight, moved to Daydream (Adrian Cipriani's projector and camera table,
 built on Folk). Two players stand at the short ends of the table. Their creatures fight in
 a ring of light in the middle, and everything is played with hands. It is a Daydream app

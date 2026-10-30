@@ -1,0 +1,23 @@
+{
+  "name": "creature-arena",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Creature Arena: a browser battle game for the Genome Wrapped creatures. Never reads DNA; uses only a creature's 4 gene types.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lan": "vite build && node server/lan.mjs",
+    "test:qr": "node tests/qr.browser.mjs",
+    "test:browser": "vite build && node tests/qr.browser.mjs && node tests/lan.browser.mjs && node tests/coop.browser.mjs && node tests/coop_lan.browser.mjs && node tests/layout.browser.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2",
+    "vitest": "^5.0.3"
+  }
+}
