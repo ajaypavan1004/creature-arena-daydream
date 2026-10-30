@@ -667,7 +667,7 @@ $cc code {
     /* -------------------------------------------------------- pictures */
 
     /* The ca-sprite pipeline's instances: {viewport surfaceToClip TEX
-     * ASPECT {cx cy ux uy} {u0 v0 u1 v1} {flash night alpha 0}} in
+     * ASPECT {cx cy ux uy} {u0 v0 u1 v1} {flash night alpha 1}} in
      * display pixels. u is half the picture's width along its rows;
      * its columns run along perp(u) * ASPECT (signed, so a mirrored
      * map works). */
@@ -690,7 +690,7 @@ $cc code {
         if (uu < 1e-6) { return; }
         double aspect = (-uy * vx + ux * vy) / uu;
         if (flip) { float t = u0; u0 = u1; u1 = t; }
-        gm_buf_printf(&sp->buf, "%s{%s %d %.4f {%.1f %.1f %.2f %.2f} {%.6f %.6f %.6f %.6f} {%.3f %.3f %.3f 0}}",
+        gm_buf_printf(&sp->buf, "%s{%s %d %.4f {%.1f %.1f %.2f %.2f} {%.6f %.6f %.6f %.6f} {%.3f %.3f %.3f 1}}",
                       sp->n ? " " : "", cv->head, tex, aspect, pc.x, pc.y, ux, uy, u0, v0, u1, v1, flash, night, alpha);
         sp->n++;
     }
@@ -1222,8 +1222,10 @@ Claim the creature arena library is $arenaLib
 # The pictures: one textured quad an instance, from the atlas or the
 # floor. place {cx cy ux uy}: the centre and half the width along the
 # picture's rows (display pixels); its columns run along perp(u) *
-# aspect. uv {u0 v0 u1 v1}: the cell. fx {flash night alpha 0}: white
-# when hit, the browser game's night blue (#0b1440, render.ts), fade.
+# aspect. uv {u0 v0 u1 v1}: the cell. fx {flash night alpha split}:
+# white when hit, the browser game's night blue (#0b1440, render.ts),
+# fade, and 1 when the texture carries its alpha as a second, lower half
+# (tools/atlas.py: Folk's PNG loader drops a PNG's alpha).
 Wish the GPU compiles pipeline "ca-sprite" {
     {vec2 viewport mat3 surfaceToClip sampler2D tex float aspect vec4 place vec4 uv vec4 fx} {
         vec2 u = place.zw;
@@ -1240,7 +1242,13 @@ Wish the GPU compiles pipeline "ca-sprite" {
         vec2 v = vec2(-u.y, u.x) * aspect;
         vec2 l = vec2(dot(d, u) / dot(u, u), dot(d, v) / dot(v, v));
         if (abs(l.x) > 1.0 || abs(l.y) > 1.0) { return vec4(0.0); }
-        vec4 c = texture(tex, mix(uv.xy, uv.zw, l * 0.5 + 0.5));
+        vec2 t = mix(uv.xy, uv.zw, l * 0.5 + 0.5);
+        vec4 c;
+        if (fx.w > 0.5) {
+            c = vec4(texture(tex, vec2(t.x, t.y * 0.5)).rgb, texture(tex, vec2(t.x, 0.5 + t.y * 0.5)).r);
+        } else {
+            c = texture(tex, t);
+        }
         if (c.a < 0.004) { return vec4(0.0); }
         vec3 rgb = mix(c.rgb, vec3(0.0033, 0.0070, 0.0513), fx.y);
         rgb = mix(rgb, vec3(1.0), fx.x);
@@ -1248,7 +1256,7 @@ Wish the GPU compiles pipeline "ca-sprite" {
     }
 }
 
-# The textures, only while the game is played (46 MB of pictures in
+# The textures, only while the game is played (about 110 MB of pictures in
 # all; the image loader keeps them after the first time).
 When creaturearena is wanted & the image loader is /loadImage/ {
     fn loadImage

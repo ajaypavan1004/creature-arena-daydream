@@ -1,7 +1,7 @@
 /* atlas.h -- made by tools/atlas.py: where each picture is in
  * art/atlas.png (uv 0..1) and its size in sprite heights. */
 #define CA_ATLAS_W 4096
-#define CA_ATLAS_H 2816
+#define CA_ATLAS_H 2816  /* the colour half; the alpha half is below it */
 typedef struct { float u0, v0, u1, v1, w, h; } CaCell;
 static const CaCell CA_CELLS[] = {
     {0.000732f, 0.001065f, 0.083740f, 0.114702f, 1.0615f, 1.0000f},  /* 0: Moonwhisker */

@@ -13,9 +13,15 @@ output. Writes to OUT_DIR (default art/):
              and a soft shadow. One texture, so a frame's sprites are
              one draw.
   floor.png  the arena's stone floor by day (left) and by night (right).
-  atlas.h    the cells: where each picture is (uv 0..1) and its size in
-             sprite heights (the browser game's spriteHeight), as the
-             browser game fits them (sprites.ts prepare).
+  atlas.h    the cells: where each picture is (uv 0..1 of the colour
+             half) and its size in sprite heights (the browser game's
+             spriteHeight), as the browser game fits them (sprites.ts
+             prepare).
+
+Both PNGs are RGB with no alpha channel: the colour in the top half, the
+alpha below it as grey (Folk's PNG loader drops a PNG's alpha, so the
+pictures carry their own; the ca-sprite pipeline reads both halves). The
+grey is sRGB-encoded, as the GPU decodes the texture as sRGB.
 
 Needs Pillow. A creature is SPRITE_PX tall in the atlas: about its size
 on the table, so the GPU (no mipmaps) neither shrinks nor blows it up much.
@@ -60,6 +66,19 @@ def premultiplied_edges(im):
     alpha = im.getchannel("A")
     out = Image.composite(im.convert("RGB"), rgb, alpha.point(lambda a: 255 if a > 0 else 0))
     out.putalpha(alpha)
+    return out
+
+
+def split(im):
+    """An RGBA picture as one RGB picture twice as tall: its colour on
+    top, its alpha below (sRGB-encoded grey, so the GPU reads it back as
+    the alpha itself)."""
+    im = im.convert("RGBA")
+    enc = [round(255 * (a / 255 * 12.92 if a / 255 <= 0.0031308 else 1.055 * (a / 255) ** (1 / 2.4) - 0.055))
+           for a in range(256)]
+    out = Image.new("RGB", (im.width, im.height * 2), (0, 0, 0))
+    out.paste(im.convert("RGB"), (0, 0))
+    out.paste(im.getchannel("A").point(enc).convert("RGB"), (0, im.height))
     return out
 
 
@@ -127,14 +146,14 @@ def main():
     atlas = Image.new("RGBA", (ATLAS_W, height), (0, 0, 0, 0))
     for i, (x, y) in place.items():
         atlas.paste(premultiplied_edges(cells[i][1]), (x, y))
-    atlas.save(out / "atlas.png", optimize=True)
+    split(atlas).save(out / "atlas.png", optimize=True)
 
     day = Image.open(baked / "floor-day.png").convert("RGBA")
     night = Image.open(baked / "floor-night.png").convert("RGBA")
     floor = Image.new("RGBA", (day.width * 2, day.height), (0, 0, 0, 0))
     floor.paste(day, (0, 0))
     floor.paste(night, (day.width, 0))
-    floor.save(out / "floor.png", optimize=True)
+    split(floor).save(out / "floor.png", optimize=True)
 
     def uv(i):
         x, y = place[i]
@@ -145,7 +164,7 @@ def main():
         "/* atlas.h -- made by tools/atlas.py: where each picture is in",
         " * art/atlas.png (uv 0..1) and its size in sprite heights. */",
         f"#define CA_ATLAS_W {ATLAS_W}",
-        f"#define CA_ATLAS_H {height}",
+        f"#define CA_ATLAS_H {height}  /* the colour half; the alpha half is below it */",
         "typedef struct { float u0, v0, u1, v1, w, h; } CaCell;",
         "static const CaCell CA_CELLS[] = {",
     ]
@@ -163,7 +182,7 @@ def main():
     lines.append("enum { " + ", ".join(f"CA_CELL_{k.upper()} = {v}" for k, v in items.items()) + " };")
     (out / "atlas.h").write_text("\n".join(lines) + "\n")
     kb = (out / "atlas.png").stat().st_size // 1024
-    print(f"atlas.py: {len(cells)} cells in {ATLAS_W}x{height} ({kb} KB), floor {floor.width}x{floor.height}")
+    print(f"atlas.py: {len(cells)} cells in {ATLAS_W}x{height} (x2 with alpha, {kb} KB), floor {floor.width}x{floor.height} (x2)")
 
 
 if __name__ == "__main__":

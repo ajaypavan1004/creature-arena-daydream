@@ -55,8 +55,9 @@ game.
   are on the GPU the creatures are drawn as light, as before.
 - `art/`: `atlas.png` (the 16 paintings, the 5 walk cycles at 12 frames a second, the
   power ups, sun, moon and a shadow, 4096 x 2816), `floor.png` (the stone arena by day and
-  by night, seen from above) and `atlas.h` (where each picture is). Made from the
-  browser-game branch:
+  by night, seen from above) and `atlas.h` (where each picture is). Both are RGB with the
+  alpha as a grey lower half, because Folk's PNG loader drops a PNG's alpha channel; the
+  `ca-sprite` pipeline reads both halves. Made from the browser-game branch:
 
   ```
   git worktree add ../browser origin/browser-game

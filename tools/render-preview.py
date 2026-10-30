@@ -104,7 +104,12 @@ def sprite(img, texs, inst):
     inside = (np.abs(lx) <= 1) & (np.abs(ly) <= 1)
     tu = uv[0] + (uv[2] - uv[0]) * (lx * 0.5 + 0.5)
     tv = uv[1] + (uv[3] - uv[1]) * (ly * 0.5 + 0.5)
-    c = sample(texs[int(tex)], tu, tv)
+    t = texs[int(tex)]
+    if fx[3] > 0.5:     # colour on top, alpha below (tools/atlas.py)
+        c = sample(t, tu, tv * 0.5)
+        c[..., 3] = sample(t, tu, 0.5 + tv * 0.5)[..., 0]
+    else:
+        c = sample(t, tu, tv)
     rgb = c[..., :3] * (1 - fx[1]) + np.array([0.0033, 0.0070, 0.0513]) * fx[1]
     rgb = rgb * (1 - fx[0]) + fx[0]
     a = np.where(inside & (c[..., 3] >= 0.004), c[..., 3] * fx[2], 0)
