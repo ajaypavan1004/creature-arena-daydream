@@ -57,9 +57,9 @@ With Adrian's SDK (daydream-sdk), on Folk built from it:
   pinch pulled away unzips a helix and lets it zip back.
 - `dream budget`: within the table's budgets: CPU 1.9 ms a frame (95th percentile) of 2 ms,
   GPU about 1.4 ms of 2 ms (an estimate).
-- The previews above are made off the table, because the studio doesn't draw custom
-  shaders: `tools/preview.folk` records what the app wishes drawn, and
-  `tools/render-preview.py` draws it with the same maths as the shaders.
+- The previews above are made off the table, without a browser: `tools/preview.folk`
+  records what the app wishes drawn, and `tools/render-preview.py` draws it with the same
+  maths as the shaders. `dream studio` draws the real shaders in the browser (WebGL).
 
 Not yet tried on the real table.
 
