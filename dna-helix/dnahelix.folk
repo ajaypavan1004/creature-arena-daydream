@@ -905,15 +905,23 @@ When dnahelix is wanted & the dna helix labels on /display/ are /labels/ &\
         lassign $label position radians scale text
         lassign $position x y
         set lines [split $text "\n"]
-        set chars [tcl::mathfunc::max {*}[lmap l $lines { string length $l }]]
-        set r [expr {0.5 * hypot($chars * $scale * 0.62, [llength $lines] * $scale * 1.25) + 8}]
-        set x0 [expr {min($x0, $x - $r)}]; set x1 [expr {max($x1, $x + $r)}]
-        set y0 [expr {min($y0, $y - $r)}]; set y1 [expr {max($y1, $y + $r)}]
+        # (Jim's expr has no min or max.)
+        set chars [lindex [lsort -integer -decreasing [lmap l $lines { string length $l }]] 0]
+        set wl [expr {$chars * $scale * 0.62}]; set hl [expr {[llength $lines] * $scale * 1.25}]
+        set r [expr {0.5 * sqrt($wl * $wl + $hl * $hl) + 8}]
+        if {$x - $r < $x0} { set x0 [expr {$x - $r}] }
+        if {$x + $r > $x1} { set x1 [expr {$x + $r}] }
+        if {$y - $r < $y0} { set y0 [expr {$y - $r}] }
+        if {$y + $r > $y1} { set y1 [expr {$y + $r}] }
     }
     if {$x1 <= $x0} { return }
     set dw [dict get $dispOptions width]; set dh [dict get $dispOptions height]
-    set x0 [expr {max(0, int(floor($x0 / 64.0)) * 64)}]; set y0 [expr {max(0, int(floor($y0 / 64.0)) * 64)}]
-    set x1 [expr {min($dw, int(ceil($x1 / 64.0)) * 64)}]; set y1 [expr {min($dh, int(ceil($y1 / 64.0)) * 64)}]
+    set x0 [expr {int(floor($x0 / 64.0)) * 64}]; set y0 [expr {int(floor($y0 / 64.0)) * 64}]
+    set x1 [expr {int(ceil($x1 / 64.0)) * 64}]; set y1 [expr {int(ceil($y1 / 64.0)) * 64}]
+    if {$x0 < 0} { set x0 0 }
+    if {$y0 < 0} { set y0 0 }
+    if {$x1 > $dw} { set x1 $dw }
+    if {$y1 > $dh} { set y1 $dh }
     set w [expr {$x1 - $x0}]; set h [expr {$y1 - $y0}]
     if {$w < 8 || $h < 8} { return }
 

@@ -55,6 +55,15 @@ check {[llength $strands] == 2 && [lindex $strands 0 2] >= 12 && [lindex $strand
 check {[llength [drawnInstances games-beam]] < 30} "and no rung beams (only the creature, drawn as light here): [llength [drawnInstances games-beam]]"
 if {[info exists ::env(HX_DUMP)]} { set f [open $::env(HX_DUMP) w]; puts $f $strands; close $f }
 check {[waitFor [list the dna helix labels on $display are /l/] 5] ne ""} "it labels them"
+proc labelCanvases {} {
+    lmap r [Query! /someone/ wishes the GPU creates canvas /id/ with /...o/] {
+        if {[lindex [dict get $r id] 1] ne "dnahelix-labels"} { continue }
+        dict get $r id
+    }
+}
+set lc {}
+for {set i 0} {$i < 50 && [llength $lc] == 0} {incr i} { set lc [labelCanvases]; if {$lc eq ""} { sleep 0.02 } }
+check {[llength $lc] == 1} "the labels go into one canvas of their own, around them: $lc"
 
 # 1. A fingertip on copy 2's CYP1A2 rung: A becomes C, one C makes an Ember.
 set spec [dict create id 31 mode open at [wristFor open index {0.204 0.529}]]
