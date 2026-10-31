@@ -54,8 +54,13 @@
 # browser-game branch) and drawn by one sprite pipeline (ca-sprite) in
 # one draw a frame. Light effects (the glowing ring, slashes, sparks,
 # shields, the switches) go through the games kit's games-dot and
-# games-beam pipelines. Everything is built in C each frame. Labels go
-# through `to draw text onto`. Until the textures are on the GPU (and
+# games-beam pipelines. Everything is built in C each frame; what
+# changes only with the day and night (the floor, the arena's ring) is
+# held and re-held only when it changes, so a frame encodes only what
+# moves. Labels go through `to draw text onto` and are held too. Every
+# 5 s of play the game holds `the creature arena timing is {steps N
+# stepMs {P50 P95} skipped K seconds S}` (its frame step's cost, and
+# frames it missed). Until the textures are on the GPU (and
 # in the headless tests) the creatures are drawn as light.
 
 set gamesDir "[pwd]/kits/games"
@@ -99,6 +104,7 @@ set ARENA_SETTINGS {
 }
 # Layers: games draw at 90-98, under the tag masks (100).
 set ARENA_LAYERS {ca-sprite 90.5 fillTriangle 91 games-beam 92 games-dot 94}
+set ARENA_STATIC_LAYERS {ca-sprite 90.2 games-beam 92}
 set ARENA_TEXT_LAYER 96
 
 set controlsDir "[pwd]/kits/controls"
@@ -944,6 +950,49 @@ $cc proc configure {Jim_Obj* settings} void {
     pthread_mutex_unlock(&lock);
 }
 
+# The frame step's own timing (`timed US T` after each step):
+# `the creature arena timing is {steps N stepMs {P50 P95} skipped K
+# seconds S}`, held every 5 s while it plays (`timing` returns it, or ""
+# while the 5 s run).
+$cc code {
+    static double tmStart = 0, tmLastT = 0;
+    static int tmSteps = 0, tmSkipped = 0, tmHist[64];
+    /* The last table map a step had (the step's own lookup can miss one). */
+    static SpTableMap lastM; static SpVec2 lastFp[GM_POLY_MAX]; static int lastNf = 0, haveMap = 0;
+    static pthread_mutex_t mapLock = PTHREAD_MUTEX_INITIALIZER;
+}
+$cc proc hasMap {} int {
+    pthread_mutex_lock(&mapLock);
+    int h = haveMap;
+    pthread_mutex_unlock(&mapLock);
+    return h;
+}
+$cc proc timed {double us double t} void {
+    pthread_mutex_lock(&lock);
+    if (tmStart <= 0 || t < tmStart) { tmStart = t; tmSteps = tmSkipped = 0; memset(tmHist, 0, sizeof(tmHist)); tmLastT = 0; }
+    if (tmLastT > 0 && t - tmLastT > 0.025) { tmSkipped += (int)((t - tmLastT) / 0.0167 + 0.5) - 1; }
+    tmLastT = t;
+    tmSteps++;
+    int b = (int)(us / 250.0); if (b > 63) { b = 63; } if (b < 0) { b = 0; }
+    tmHist[b]++;
+    pthread_mutex_unlock(&lock);
+}
+$cc proc timing {double t} Jim_Obj* {
+    pthread_mutex_lock(&lock);
+    if (tmStart <= 0 || t - tmStart < 5 || tmSteps == 0) { pthread_mutex_unlock(&lock); return Jim_NewStringObj(interp, "", 0); }
+    double p50 = 0, p95 = 0; int acc = 0;
+    for (int i = 0; i < 64; i++) {
+        acc += tmHist[i];
+        if (p50 == 0 && acc >= tmSteps * 0.5) { p50 = (i + 1) * 0.25; }
+        if (p95 == 0 && acc >= tmSteps * 0.95) { p95 = (i + 1) * 0.25; }
+    }
+    char buf[200];
+    snprintf(buf, sizeof(buf), "steps %d stepMs {%.2f %.2f} skipped %d seconds %.1f", tmSteps, p50, p95, tmSkipped, t - tmStart);
+    tmStart = 0;
+    pthread_mutex_unlock(&lock);
+    return Jim_NewStringObj(interp, buf, -1);
+}
+
 $cc proc reset {int seed} void {
     pthread_mutex_lock(&lock);
     shownReset = 1;
@@ -1052,10 +1101,19 @@ $cc proc state {} Jim_Obj* {
 # hits {{P DAMAGE} ...} won P}.
 $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                Jim_Obj* viewport Jim_Obj* surfaceToClip Jim_Obj* textures} Jim_Obj* {
+    /* The table map: the frame step looks it up itself, and a step that
+     * finds none (the map re-claimed between two frames) draws with the
+     * last one, so the arena never drops out for a frame. */
     SpTableMap M;
-    if (!sp_jim_table_map(interp, map, &M)) { FOLK_ERROR("creaturearena: not a table map"); }
     SpVec2 fp[GM_POLY_MAX];
-    int nf = sp_jim_vec2s(interp, sp_jim_dict_get(interp, map, "footprint"), fp, GM_POLY_MAX);
+    int nf = 0;
+    int mapOk = Jim_ListLength(interp, map) > 0 && sp_jim_table_map(interp, map, &M);
+    if (mapOk) { nf = sp_jim_vec2s(interp, sp_jim_dict_get(interp, map, "footprint"), fp, GM_POLY_MAX); }
+    pthread_mutex_lock(&mapLock);
+    if (mapOk) { lastM = M; memcpy(lastFp, fp, sizeof(fp)); lastNf = nf; haveMap = 1; }
+    else if (haveMap) { M = lastM; memcpy(fp, lastFp, sizeof(fp)); nf = lastNf; mapOk = 1; }
+    pthread_mutex_unlock(&mapLock);
+    if (!mapOk) { FOLK_ERROR("creaturearena: no table map yet"); }
     GmHand hands[GM_MAX_HANDS];
     int nh = gm_read_hands(interp, poses, hands, GM_MAX_HANDS);
     CtHand chands[CT_MAX_HANDS];
@@ -1064,12 +1122,21 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
     gm_canvas_init(interp, &canvas, &M, viewport, surfaceToClip);
     CaSprites sprites;
     memset(&sprites, 0, sizeof(sprites));
+    /* What changes only with the day and night (the floor, the arena's
+     * ring): drawn apart and held while it stays the same, so a frame
+     * encodes only what moves. */
+    GmCanvas bg;
+    gm_canvas_init(interp, &bg, &M, viewport, surfaceToClip);
+    CaSprites bgSprites;
+    memset(&bgSprites, 0, sizeof(bgSprites));
+    static GmBuf shownBg;
     int art = canvas.on && Jim_ListLength(interp, textures) == CA_PAGES + 1;
     for (int i = 0; art && i <= CA_PAGES; i++) {
         jim_wide t;
         if (Jim_GetWide(interp, Jim_ListGetIndex(interp, textures, i), &t) != JIM_OK || t < 0) { art = 0; break; }
         if (i < CA_PAGES) { sprites.atlas[i] = (int)t; } else { sprites.floor = (int)t; }
     }
+    if (art) { memcpy(bgSprites.atlas, sprites.atlas, sizeof(sprites.atlas)); bgSprites.floor = sprites.floor; }
     GmNotes notes; notes.count = 0;
     static CaLabels labels, shownLabels;
     labels.n = 0; labels.s[0] = 0;
@@ -1305,27 +1372,29 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
 
         /* ----------------------------- drawing ----------------------------- */
         float night = (float)g->nightness;
+        /* (The floor and ring follow the night in 32 steps: held, not
+         * redrawn every frame of the 2.5 s change.) */
+        float nightStep = roundf(night * 32) / 32;
         double H = c->spriteHeight * L.k;          /* a creature's picture, m tall */
         if (art) {
             /* The stone floor: day, and night fading in over it. The
              * floor picture is the ring plus a band of wall, 546 of the
              * ring's 520 units to each side. */
             double half = L.R * 546.0 / 520.0;
-            if (night < 0.996f) {
-                ca_sprite(&canvas, &sprites, sprites.floor, L.centre, L.in[1], half, half, 0, 0, 0, 0.5f, 1, 0, 0, 0, 1);
+            if (nightStep < 0.996f) {
+                ca_sprite(&bg, &bgSprites, bgSprites.floor, L.centre, L.in[1], half, half, 0, 0, 0, 0.5f, 1, 0, 0, 0, 1);
             }
-            if (night > 0.004f) {
-                ca_sprite(&canvas, &sprites, sprites.floor, L.centre, L.in[1], half, half, 0, 0.5f, 0, 1, 1, 0, 0, 0, night);
+            if (nightStep > 0.004f) {
+                ca_sprite(&bg, &bgSprites, bgSprites.floor, L.centre, L.in[1], half, half, 0, 0.5f, 0, 1, 1, 0, 0, 0, nightStep);
             }
         }
         GmColor dayEdge = ca_hex(0x7fe7ff, 1), warm = ca_hex(0xffd27a, 1), cool = ca_hex(0x6f7cff, 1);
-        GmColor edge = gm_mix(gm_mix(dayEdge, warm, 0.45f), gm_mix(dayEdge, cool, 0.55f), (float)g->nightness);
-        double pulse = 0.75 + 0.25 * sin(now * 2 * M_PI * 0.35);
+        GmColor edge = gm_mix(gm_mix(dayEdge, warm, 0.45f), gm_mix(dayEdge, cool, 0.55f), nightStep);
         #define RING 36
         for (int i = 0; i < RING; i++) {
             double a0 = i * 2 * M_PI / RING, a1 = (i + 1) * 2 * M_PI / RING;
-            gm_beam(&canvas, sp_add2(L.centre, sp_v2(cos(a0) * L.R, sin(a0) * L.R)),
-                    sp_add2(L.centre, sp_v2(cos(a1) * L.R, sin(a1) * L.R)), 0.004, 0.003 * pulse, 1.0, gm_alpha(edge, 0.9f));
+            gm_beam(&bg, sp_add2(L.centre, sp_v2(cos(a0) * L.R, sin(a0) * L.R)),
+                    sp_add2(L.centre, sp_v2(cos(a1) * L.R, sin(a1) * L.R)), 0.004, 0.0027, 1.0, gm_alpha(edge, 0.9f));
         }
         /* The sun or the moon, beside the ring on both long sides. */
         for (int k = -1; k <= 1; k += 2) {
@@ -1548,9 +1617,21 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
     int pub[4] = {g->phase, ca_creature(&g->side[1]), ca_creature(&g->side[2]), g->winner};
     int changed = 0;
     for (int i = 0; i < 4; i++) { if (pub[i] != g->published[i]) { changed = 1; g->published[i] = pub[i]; } }
-    if (shownReset) { shownLabels.n = -1; shownReset = 0; }
+    if (shownReset) { shownLabels.n = -1; shownBg.n = (size_t)-1; shownReset = 0; }
     int labelsChanged = canvas.on && (labels.n != shownLabels.n || memcmp(labels.s, shownLabels.s, labels.n) != 0);
     if (labelsChanged) { shownLabels = labels; }
+    /* The static layer as one string ("ca-sprite {...} games-beam {...}"),
+     * held by the Tcl side only when it differs from the one shown. */
+    GmBuf bgAll = {0};
+    if (bgSprites.n > 0) { gm_buf_printf(&bgAll, "ca-sprite {%.*s}", (int)bgSprites.buf.n, bgSprites.buf.s); }
+    if (bg.nBeams > 0) { gm_buf_printf(&bgAll, "%sgames-beam {%.*s}", bgAll.n ? " " : "", (int)bg.beams.n, bg.beams.s); }
+    gm_buf_free(&bgSprites.buf);
+    gm_canvas_free(&bg);
+    int bgChanged = canvas.on && (bgAll.n != shownBg.n || (bgAll.n > 0 && memcmp(bgAll.s, shownBg.s, bgAll.n) != 0));
+    if (bgChanged) {
+        gm_buf_free(&shownBg);
+        if (bgAll.n > 0) { gm_buf_printf(&shownBg, "%.*s", (int)bgAll.n, bgAll.s); }
+    }
     pthread_mutex_unlock(&lock);
 
     Jim_Obj* names = Jim_NewListObj(interp, NULL, 0);
@@ -1581,6 +1662,9 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
     sp_jim_put(interp, result, "draws", draws);
     sp_jim_put(interp, result, "labels", Jim_NewStringObj(interp, labels.s, labels.n));
     sp_jim_put(interp, result, "labelsChanged", Jim_NewIntObj(interp, labelsChanged));
+    sp_jim_put(interp, result, "static", Jim_NewStringObj(interp, bgAll.s ? bgAll.s : "", (int)bgAll.n));
+    sp_jim_put(interp, result, "staticChanged", Jim_NewIntObj(interp, bgChanged));
+    gm_buf_free(&bgAll);
     sp_jim_put(interp, result, "notes", gm_notes_result(interp, &notes));
     sp_jim_put(interp, result, "hits", hl);
     sp_jim_put(interp, result, "won", Jim_NewIntObj(interp, wonBy));
@@ -1685,6 +1769,8 @@ When the collected results for [list /someone/ wishes creaturearena is played] a
     } else {
         Hold! -on $arenaThis -key {arena wanted} {}
         Hold! -on $arenaThis -key {arena state} {}
+        foreach pipeline [dict keys $ARENA_STATIC_LAYERS] { Hold! -on $arenaThis -key [list arena static $pipeline] {} }
+        Hold! -on $arenaThis -key {arena timing} {}
         $arenaLib reset 0
     }
 }
@@ -1701,10 +1787,17 @@ When creaturearena is wanted {
 # Once a frame of the display, on the table camera's map only. One
 # atomic version per step, so the display never shows two steps.
 When creaturearena is wanted &\
-     camera /camera/ is the table camera for display /display/ &\
-     the table map from camera /camera/ to display /display/ is /map/ {
+     camera /camera/ is the table camera for display /display/ {
 
     When -atomicallyWithKey [list $arenaThis creaturearena $display] the frame clock time is /t/ {
+        set t0 [clock microseconds]
+        # The map is looked up here, not matched above: a map re-claimed
+        # between frames would otherwise take the whole frame loop (and
+        # the arena) down until the next step. None: the step draws with
+        # the last one.
+        set m [lindex [Query! the table map from camera $camera to display $display is /map/] 0]
+        set map [expr {$m eq "" ? "" : [dict get $m map]}]
+        if {$map eq "" && ![$arenaLib hasMap]} { return }
         set poses [lmap r [Query! hand /h/ has pose /pose/] { dict get $r pose }]
         set viewport ""; set surfaceToClip ""; set canvas ""
         set canvases [Query! $display has canvas /canvas/ with /...options/]
@@ -1726,6 +1819,20 @@ When creaturearena is wanted &\
                     with instances $instances layer [dict get $ARENA_LAYERS $pipeline]
             }
         }
+        # The floor and the arena's ring, held while they stay the same
+        # (once per step of the day and night), not encoded every frame.
+        if {$canvas ne "" && [dict get $result staticChanged]} {
+            set still [dict get $result static]
+            foreach pipeline [dict keys $ARENA_STATIC_LAYERS] {
+                if {[dict exists $still $pipeline]} {
+                    Hold! -on $arenaThis -key [list arena static $pipeline] \
+                        Wish the GPU draws pipeline $pipeline onto canvas $canvas \
+                            with instances [dict get $still $pipeline] layer [dict get $ARENA_STATIC_LAYERS $pipeline]
+                } else {
+                    Hold! -on $arenaThis -key [list arena static $pipeline] {}
+                }
+            }
+        }
         # Labels change rarely (a flipped gene, a hit, the countdown), so
         # they are held when they change, not wished every frame.
         if {[dict get $result labelsChanged]} {
@@ -1742,6 +1849,11 @@ When creaturearena is wanted &\
         }
         if {[dict get $result won] > 0} {
             Notify: creature arena won by player [dict get $result won]
+        }
+        $arenaLib timed [expr {[clock microseconds] - $t0}] $t
+        set timing [$arenaLib timing $t]
+        if {$timing ne ""} {
+            Hold! -on $arenaThis -key {arena timing} Claim the creature arena timing is $timing
         }
         # The state only when it changes (rule 6: never a claim per frame).
         if {[dict get $result changed]} {

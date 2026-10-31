@@ -62,8 +62,11 @@ game.
 
 - `creaturearena.folk`: the whole game. The rules are the browser game's (`src/sim.ts`)
   with the same numbers (`src/config.ts`), written in C for speed. The pictures (floor,
-  creatures, shadows, power ups, sun and moon) are one draw a frame through its own GPU
-  pipeline, `ca-sprite`: textured quads from two textures, with the browser game's hit
+  creatures, shadows, power ups, sun and moon) go through its own GPU
+  pipeline, `ca-sprite`; the floor and the arena's ring change only with the day and
+  night, so they are held (re-held once per step of the change) and a frame encodes
+  only what moves. `the creature arena timing is ...` reports the frame step's cost
+  every 5 s of play. The sprites are textured quads from two textures, with the browser game's hit
   flash and night shading in the shader. The glowing ring, slashes, sparks, shields and
   switches are light (the games kit's `games-dot` and `games-beam`). Until the textures
   are on the GPU the creatures are drawn as light, as before.

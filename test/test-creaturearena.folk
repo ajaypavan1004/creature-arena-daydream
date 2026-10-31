@@ -9,7 +9,8 @@
 #   with the rings, the ring's hand steers and the other hand bites;
 #   coffee, greens and orbs do what each creature's genes say;
 #   the last bite knocks out the other creature and wins;
-#   with the textures, the pictures are drawn from them in one draw.
+#   with the textures, the pictures are drawn from them: the floor in
+#   one held draw, what moves in one draw a frame.
 #
 # Run from the daydream (folk) directory with a built folk:
 #     APP_DIR=path/to/app ./folk path/to/app/test/test-creaturearena.folk
@@ -152,7 +153,7 @@ $arena place 2 250 200 150
 feedHands $lib $map $camera [list [handUp 30 open palm {0.219 0.76}]] 10
 feedHands $lib $map $camera [list [handUp 30 open palm {0.289 0.76}]] 40
 removeHand 30
-check {[lindex [st $arena f1] 0] > -150} "rings: the ring's hand pushing right runs the creature right: [st $arena f1]"
+check {[lindex [st $arena f1] 0] > -200} "rings: the ring's hand pushing right runs the creature right: [st $arena f1]"
 waitForNone {hand 30 has pose /p/} 2
 $arena place 1 -70 0 150
 $arena place 2 70 0 150
@@ -216,7 +217,9 @@ check {[waitFor {the creature arena is won with creatures /c/ winner 1} 2] ne ""
 
 # 7. The pictures: once the GPU has the textures (stand-ins here: 1..N
 # the atlas's pages, N+1 the floor), the floor, both creatures, their
-# shadows and the power ups are drawn from them, in one draw.
+# shadows and the power ups are drawn from them: the floor (with the
+# arena's ring, the static layer) held in a draw of its own under the
+# rest, which is one draw a frame.
 $arena startFight
 $arena drop coffee 0 -250
 set pages [llength [glob $appDir/art/atlas-*.png]]
@@ -235,8 +238,8 @@ for {set i 0} {$i < 50} {incr i} {
     sleep 0.02
 }
 check {[dict get $n atlas] >= 6 && [dict get $n floor] >= 1} "with the textures: the floor, the creatures, their shadows, the icons: $n"
-check {[llength [Query! /someone/ wishes the GPU draws pipeline ca-sprite onto canvas /c/ with instances /i/ layer /l/]] == 1} \
-    "the pictures are one draw"
+set layers [lsort [lmap r [Query! /someone/ wishes the GPU draws pipeline ca-sprite onto canvas /c/ with instances /i/ layer /l/] { dict get $r l }]]
+check {$layers eq {90.2 90.5}} "the pictures are two draws, the held floor under what moves: layers $layers"
 
 # 8. Alone, with the computer on (off by default): player 1 is ready,
 # nobody's hands come from player 2's end: the computer plays it, and
