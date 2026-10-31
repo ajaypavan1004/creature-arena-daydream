@@ -1,0 +1,65 @@
+# test-dnahelix.folk -- off-table test of dnahelix.folk on the made-up
+# rig (kits/testing/lib-test.tcl), with hands built from straight lines:
+#
+#   it starts as Moonwhisker (A/A G/G G/C T/T) and draws both copies;
+#   a fingertip held on copy 2's CYP1A2 rung swaps A for C: one C makes
+#   an Ember, so the creature becomes Shadepounce;
+#   a pinch on copy 1 pulled towards the front unzips it, and it zips
+#   back when let go.
+#
+# Run from the daydream (folk) directory with a built folk:
+#     APP_DIR=path/to/app ./folk path/to/app/test/test-dnahelix.folk
+# (`dream test` does this.) Exits 0 and prints PASS when every check holds.
+
+source kits/testing/lib-test.tcl
+source kits/games/test/lib-games-test.tcl
+
+set appDir [expr {[info exists ::env(APP_DIR)] ? $::env(APP_DIR) : "."}]
+loadSpatialPrograms
+loadProgram kits/spatial/hands.folk
+loadProgram kits/games/games.folk
+loadProgram $appDir/dnahelix.folk
+assertRig
+mockFrameClock
+Assert! when {Wish dnahelix is shown} with environment [list [list this test-dnahelix]]
+
+set camera $::rigCamera
+set display $::rigDisplay
+set lib [dict get [waitFor {the spatial library is /lib/} 60] lib]
+set map [dict get [waitFor [list the table map from camera $camera to display $display is /map/] 20] map]
+set helix [dict get [waitFor {the dna helix library is /lib/} 30] lib]
+mockCanvas $display
+warmUpHands $lib $map $camera
+
+proc st {helix key} { dict get [$helix state] $key }
+
+# The rig's field is 1.5 x 0.86 m, its front edge at y = 0.86. Copy 1
+# runs along y = 0.309, copy 2 along y = 0.529; the four SNP rungs are
+# at x = 0.204, 0.42, 0.636 and 0.852.
+check {[waitFor {the dna helix shows Moonwhisker with genotypes {AA GG GC TT}} 10] ne ""} \
+    "it starts as Moonwhisker: [Query! the dna helix shows /c/ with genotypes /g/]"
+sleep 0.2
+check {[drawnCount games-beam 100] >= 100} "it draws both helixes"
+check {[waitFor [list the dna helix labels on $display are /l/] 5] ne ""} "it labels them"
+
+# 1. A fingertip on copy 2's CYP1A2 rung: A becomes C, one C makes an Ember.
+set spec [dict create id 31 mode open at [wristFor open index {0.204 0.529}]]
+feedHands $lib $map $camera [list $spec] 50
+removeHand 31
+check {[lindex [st $helix genotypes] 0] eq "AC"} "the letter swapped: [st $helix genotypes]"
+check {[st $helix creature] eq "Shadepounce"} "one C makes an Ember: [st $helix creature]"
+check {[waitFor {the dna helix shows Shadepounce with genotypes {AC GG GC TT}} 3] ne ""} "and it is held"
+waitForNone {hand 31 has pose /p/} 2
+
+# 2. A pinch on copy 1 between rungs, pulled 8 cm towards the front, unzips it.
+set open [dict create id 32 mode open at [wristFor pinch pinch {0.52 0.32}]]
+set pull [dict create id 32 mode pinch at [wristFor pinch pinch {0.52 0.32}] step {0 0.004}]
+feedHands $lib $map $camera [list $open] 8
+feedHands $lib $map $camera [list $pull] 25
+check {[lindex [st $helix open] 0] > 0.5} "pulling unzipped copy 1: [st $helix open]"
+check {[lindex [st $helix genotypes] 0] eq "AC"} "without swapping any letter: [st $helix genotypes]"
+removeHand 32
+sleep 1.2
+check {[lindex [st $helix open] 0] < 0.05} "let go, it zipped back: [st $helix open]"
+
+finish
