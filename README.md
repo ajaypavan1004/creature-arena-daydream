@@ -1,5 +1,8 @@
 # Creature Arena on the Daydream table
 
+This repo also has **DNA Helix** in `dna-helix/`: two turning helixes of light where you
+swap the four creature letters and watch the creature change. See its README.
+
 Creature Arena's fight, moved to Daydream (Adrian Cipriani's projector and camera table,
 built on Folk). Two players stand at the short ends of the table. Their creatures fight in
 a ring of light in the middle, and everything is played with hands. It is a Daydream app

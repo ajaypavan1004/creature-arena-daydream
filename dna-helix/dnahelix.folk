@@ -1,0 +1,639 @@
+# dnahelix.folk -- DNA Helix: your two copies of a stretch of DNA as two
+# turning double helixes of light, with the four letters that decide a
+# Genome Wrapped creature lit up on them. Change a letter and the
+# creature beside them changes.
+#
+#   - Two helixes run along the table: copy 1 (from one parent) and copy
+#     2 (from the other). Everyone has two copies of each gene.
+#   - Four glowing rungs on each copy are the four SNPs behind the
+#     creatures (Genome Wrapped app/src/engine/archetype.ts):
+#       Flame   CYP1A2  rs762551   A/A Blaze, any C Ember (caffeine clearance)
+#       Time    HCRTR2  rs2653349  any A Dawn, G/G Dusk (body clock)
+#       Senses  TAS2R38 rs713598   any G Keen, C/C Bold (bitter taste)
+#       Spark   ADORA2A rs5751876  T/T Crackling, any C Still (coffee jitters)
+#     So some letters need both copies to show (A/A, T/T) and some need
+#     only one (any A, any G): dominance, seen by trying it.
+#   - Pinch a glowing rung, or hold a fingertip on it, to swap its letter.
+#     The creature beside the helixes changes when its genes do.
+#   - Pinch anywhere else on a helix and pull away from it: it unzips
+#     there, the turning ladder lies flat and its base pairs part
+#     (A with T, G with C). Let go and it zips back.
+#
+# Only the creature letters, never anyone's real DNA: it is a toy for
+# seeing how four letters make a creature.
+#
+# Runs while someone wishes it (the menu's DNA Helix button does):
+#
+#   Wish dnahelix is shown
+#
+# Publishes (held only when it changes):
+#
+#   the dna helix shows CREATURE with genotypes {G1 G2 G3 G4}
+#       ;# each genotype two letters, copy 1 then copy 2, e.g. AC
+#
+# Drawn as light (games-dot and games-beam), one draw per pipeline per
+# frame, built in C; the labels are held when they change.
+
+set gamesDir "[pwd]/kits/games"
+set spatialDir "[pwd]/kits/spatial"
+
+# Lengths m, times s.
+set HELIX_SETTINGS {
+    trackingProfile fast
+    spacing 0.036 radius 0.032 turn 7.5 spin 0.35
+    copyGap 0.22 siteReach 0.035 dwellFlip 0.5
+    grabReach 0.06 pullFull 0.08 unzipWidth 0.12 zipBack 1.5
+    creatureSize 0.05 textHeight 0.02
+}
+set HELIX_LAYERS {fillTriangle 91 games-beam 92 games-dot 94}
+set HELIX_TEXT_LAYER 96
+
+set helixThis $this
+
+set cc [C]
+$cc cflags -I$spatialDir -I$gamesDir
+$cc include <math.h>
+$cc include <string.h>
+$cc include <pthread.h>
+$cc include "spatial.h"
+$cc include "spatial_jim.h"
+$cc include "physics.h"
+$cc include "games_jim.h"
+$cc code {
+    enum { T_PLUME = 1, T_EARS = 2, T_NECK = 4, T_MANE = 8, T_WINGS = 16, T_FINS = 32,
+           T_ARMOUR = 64, T_COIL = 128, T_SPINES = 256, T_HORNS = 512 };
+    typedef struct { const char* name; unsigned body, light, glow; int traits; } CaCreature;
+    /* Colours and traits from the creatures' paintings. */
+    static const CaCreature CREATURES[16] = {
+        {"Moonwhisker",  0x2f5fd0, 0xbcd4ff, 0xa8dcff, T_PLUME},
+        {"Nightflicker", 0x8a6cc6, 0xd8d2e4, 0xf4a6d8, T_EARS | T_PLUME},
+        {"Duskfang",     0x3f9a3a, 0xbde86c, 0xe6ff7a, T_NECK},
+        {"Starmane",     0x3c6676, 0xc9d6da, 0xeef6ff, T_NECK | T_MANE},
+        {"Sunsniffer",   0xf2c230, 0xfff0b4, 0xfff6c8, T_PLUME},
+        {"Dawnflare",    0xe65f8e, 0xffc4a8, 0xffd45a, T_EARS | T_WINGS},
+        {"Blazeleap",    0xe8622a, 0xffc27a, 0xffd166, T_PLUME},
+        {"Morningdrift", 0x4cc8bf, 0xffd6c0, 0xffe8a8, T_FINS | T_NECK},
+        {"Shadepounce",  0x3b3140, 0x5c4c5e, 0xffb84a, 0},
+        {"Glowpaw",      0x7c3f7c, 0xf2a6ca, 0xffdcf2, T_EARS | T_PLUME},
+        {"Thunderjaw",   0x5c5752, 0x8c8579, 0xffc94a, T_ARMOUR},
+        {"Mooncoil",     0x1f3f8c, 0x6fb6ff, 0xa6e4ff, T_COIL | T_MANE},
+        {"Sparksnout",   0x2f4f30, 0x62804f, 0xffd75a, T_SPINES},
+        {"Sunburrow",    0xb8742e, 0xf2b85a, 0xffd87a, T_MANE},
+        {"Emberjaw",     0x6c2019, 0xc65c3c, 0xff6a2a, T_HORNS},
+        {"Goldenhush",   0x2f5a52, 0xe8c870, 0xffd84a, T_NECK | T_MANE},
+    };
+    static GmColor ca_hex(unsigned h, float a) {
+        return gm_rgba(((h >> 16) & 255) / 255.0f, ((h >> 8) & 255) / 255.0f, (h & 255) / 255.0f, a);
+    }
+    static GmColor ca_bright(GmColor c, float k) {
+        return gm_rgba(fminf(1, c.r * k), fminf(1, c.g * k), fminf(1, c.b * k), c.a);
+    }
+    static SpVec2 ca_rot(SpVec2 v, double a) { return sp_v2(v.x * cos(a) - v.y * sin(a), v.x * sin(a) + v.y * cos(a)); }
+    /* A creature as light: at p (m), facing `fw` (unit), body radius s (m). */
+    static void ca_draw_creature(GmCanvas* cv, int idx, SpVec2 p, SpVec2 fw, double s, double now, float alpha, int dusk) {
+        const CaCreature* cr = &CREATURES[idx];
+        GmColor body = ca_hex(cr->body, alpha), light = ca_hex(cr->light, alpha), glow = ca_hex(cr->glow, alpha);
+        /* Dark creatures still need to read as light: lift them a little. */
+        float lum = 0.3f * body.r + 0.59f * body.g + 0.11f * body.b;
+        if (lum < 0.3f) { body = ca_bright(body, 0.3f / fmaxf(lum, 0.08f)); }
+        SpVec2 side = sp_v2(-fw.y, fw.x);
+        SpVec2 head = sp_add2(p, sp_scale2(fw, s * ((cr->traits & T_NECK) ? 1.25 : 0.95)));
+        SpVec2 back = sp_sub2(p, sp_scale2(fw, s * 0.9));
+        int coil = cr->traits & T_COIL;
+        /* Tail. */
+        if (cr->traits & T_PLUME) {
+            gm_beam(cv, back, sp_add2(back, sp_add2(sp_scale2(fw, -s * 1.3), sp_scale2(side, s * 0.5))), s * 0.55, s * 0.2, 0.5, gm_alpha(glow, 0.8));
+        } else if (cr->traits & T_FINS) {
+            for (int k = -1; k <= 1; k += 2) {
+                gm_beam(cv, back, sp_add2(back, sp_add2(sp_scale2(fw, -s * 1.1), sp_scale2(side, k * s * 0.6))), s * 0.22, s * 0.25, 0.2, gm_alpha(light, 0.8));
+            }
+        } else if (!coil) {
+            gm_beam(cv, back, sp_add2(back, sp_add2(sp_scale2(fw, -s * 0.9), sp_scale2(side, s * 0.25))), s * 0.16, s * 0.15, 0.3, gm_alpha(body, 0.9));
+        }
+        /* Wings, under the body. */
+        if (cr->traits & T_WINGS) {
+            for (int k = -1; k <= 1; k += 2) {
+                SpVec2 root = sp_add2(p, sp_scale2(side, k * s * 0.4));
+                SpVec2 tip = sp_add2(p, sp_add2(sp_scale2(side, k * s * 2.1), sp_scale2(fw, -s * 0.2)));
+                SpVec2 rear = sp_add2(p, sp_add2(sp_scale2(side, k * s * 1.3), sp_scale2(fw, -s * 1.0)));
+                gm_tri(cv, root, tip, rear, gm_alpha(body, 0.55));
+                gm_beam(cv, root, tip, s * 0.08, s * 0.2, 0.6, gm_alpha(glow, 0.8));
+            }
+        }
+        /* Body: a coil is a ring, the rest a disc with a lighter belly glow. */
+        if (coil) {
+            gm_dot(cv, p, s * 0.55, s * 1.05, s * 0.15, body);
+            gm_dot(cv, p, s * 0.25, s * 0.5, s * 0.2, gm_alpha(light, 0.5));
+        } else {
+            gm_dot(cv, p, 0, s, s * 0.22, body);
+            gm_dot(cv, sp_add2(p, sp_scale2(fw, -s * 0.1)), 0, s * 0.55, s * 0.08, gm_alpha(light, 0.35));
+        }
+        /* Back: spikes for a crackling look, plates, spines or a mane. */
+        if (cr->traits & T_ARMOUR) {
+            for (int i = 0; i < 6; i++) {
+                double a = i * M_PI / 3 + 0.3;
+                gm_dot(cv, sp_add2(p, sp_scale2(ca_rot(fw, a), s * 0.72)), 0, s * 0.26, s * 0.1, gm_alpha(ca_bright(body, 1.4f), 0.9));
+            }
+            gm_dot(cv, p, s * 0.9, s * 0.98, s * 0.25, gm_alpha(glow, 0.6));
+        }
+        if (cr->traits & T_SPINES) {
+            for (int i = -3; i <= 3; i++) {
+                SpVec2 dir = ca_rot(sp_scale2(fw, -1), i * 0.32);
+                SpVec2 a = sp_add2(p, sp_scale2(dir, s * 0.5));
+                gm_beam(cv, a, sp_add2(a, sp_scale2(dir, s * 0.85)), s * 0.07, s * 0.08, 0.2, gm_alpha(ca_bright(body, 1.5f), 0.9));
+            }
+        }
+        if (cr->traits & T_MANE) {
+            SpVec2 a = sp_add2(head, sp_scale2(fw, -s * 0.2));
+            gm_beam(cv, a, sp_add2(back, sp_scale2(fw, s * 0.1)), s * 0.3, s * 0.35, 0.4, gm_alpha(light, 0.75));
+        }
+        /* Neck. */
+        if (cr->traits & T_NECK) { gm_beam(cv, sp_add2(p, sp_scale2(fw, s * 0.4)), head, s * 0.38, s * 0.15, 1.0, body); }
+        /* Head. */
+        double hs = s * ((cr->traits & (T_ARMOUR | T_HORNS)) ? 0.7 : 0.6);
+        gm_dot(cv, head, 0, hs, hs * 0.2, body);
+        /* Ears or horns. */
+        for (int k = -1; k <= 1; k += 2) {
+            SpVec2 base = sp_add2(head, sp_add2(sp_scale2(side, k * hs * 0.55), sp_scale2(fw, -hs * 0.2)));
+            if (cr->traits & T_HORNS) {
+                SpVec2 mid = sp_add2(base, sp_add2(sp_scale2(side, k * hs * 0.8), sp_scale2(fw, hs * 0.1)));
+                gm_beam(cv, base, mid, hs * 0.22, hs * 0.1, 0.8, gm_alpha(light, 0.9));
+                gm_beam(cv, mid, sp_add2(mid, sp_scale2(fw, hs * 0.7)), hs * 0.15, hs * 0.1, 0.5, gm_alpha(light, 0.9));
+            } else {
+                double len = (cr->traits & T_EARS) ? 1.5 : 0.75;
+                SpVec2 tip = sp_add2(base, sp_add2(sp_scale2(side, k * hs * 0.5 * len), sp_scale2(fw, -hs * 0.6 * len)));
+                SpVec2 b2 = sp_add2(base, sp_scale2(fw, hs * 0.45));
+                gm_tri(cv, base, tip, b2, gm_alpha(body, 0.85));
+                if (cr->traits & T_EARS) { gm_beam(cv, base, tip, hs * 0.12, hs * 0.1, 0.4, gm_alpha(light, 0.7)); }
+            }
+        }
+        /* Eyes: glowing (Dusk) or bright (Dawn). */
+        for (int k = -1; k <= 1; k += 2) {
+            SpVec2 e = sp_add2(head, sp_add2(sp_scale2(side, k * hs * 0.38), sp_scale2(fw, hs * 0.4)));
+            if (dusk) { gm_dot(cv, e, 0, hs * 0.2, hs * 0.25, gm_rgba(0.81f, 0.9f, 1, alpha)); }
+            else { gm_dot(cv, e, 0, hs * 0.17, hs * 0.1, gm_rgba(1, 0.75f, 0.2f, alpha)); }
+        }
+        (void)now;
+    }
+
+    /* ------------------------------------------------------ the genes */
+
+    /* The four creature SNPs: gene, rs number, what it does, the two
+     * letters (0 and 1), and the creature side each genotype gives. */
+    typedef struct { const char* gene; const char* rs; const char* about; char letter[2]; } HxSite;
+    static const HxSite SITES[4] = {
+        {"CYP1A2",  "rs762551",  "caffeine",    {'A', 'C'}},
+        {"HCRTR2",  "rs2653349", "body clock",  {'G', 'A'}},
+        {"TAS2R38", "rs713598",  "bitter taste", {'C', 'G'}},
+        {"ADORA2A", "rs5751876", "coffee jitters", {'C', 'T'}},
+    };
+    static const char* SIDES[4][2] = { {"Blaze", "Ember"}, {"Dusk", "Dawn"}, {"Keen", "Bold"}, {"Crackling", "Still"} };
+
+    /* The creature's genes from the two copies' letters (1 = letter[1]):
+     * flame 0 Blaze 1 Ember; time 0 Dusk 1 Dawn; senses 0 Keen 1 Bold;
+     * spark 0 Crackling 1 Still (the arena's order). */
+    static void hx_genes(int a[2][4], int genes[4]) {
+        int n[4];
+        for (int s = 0; s < 4; s++) { n[s] = a[0][s] + a[1][s]; }
+        genes[0] = n[0] == 0 ? 0 : 1;     /* no C: Blaze */
+        genes[1] = n[1] > 0 ? 1 : 0;      /* any A: Dawn */
+        genes[2] = n[2] > 0 ? 0 : 1;      /* any G: Keen */
+        genes[3] = n[3] == 2 ? 0 : 1;     /* T/T: Crackling */
+    }
+    static int hx_creature(int a[2][4]) {
+        int g[4];
+        hx_genes(a, g);
+        return g[0] * 8 + g[1] * 4 + g[2] * 2 + g[3];
+    }
+
+    static char hx_pair(char b) { return b == 'A' ? 'T' : b == 'T' ? 'A' : b == 'G' ? 'C' : 'G'; }
+    static unsigned hx_base_color(char b) {
+        return b == 'A' ? 0x4ade80 : b == 'T' ? 0xf87171 : b == 'G' ? 0xfacc15 : 0x60a5fa;
+    }
+
+    /* ------------------------------------------------------ the state */
+
+    typedef struct {
+        double spacing, radius, turn, spin, copyGap, siteReach, dwellFlip;
+        double grabReach, pullFull, unzipWidth, zipBack, creatureSize, textHeight;
+    } HxConfig;
+
+    #define HX_MAXBASES 96
+    #define HX_HANDMEM 32
+    typedef struct {
+        int allele[2][4];             /* [copy][site]: 0 or 1 */
+        double dwell[2][4]; int latched[2][4];
+        double flash[2][4];           /* a swapped letter glows, s left */
+        double open[2], openAt[2];    /* each copy's unzip: how far (0..1), and where along it (m) */
+        int grabHand[2];              /* the hand pulling it open, 0 none */
+        double changed;               /* the creature changed: s left of its flash */
+        double t;
+        struct { int id, pinch; double seen; } hand[HX_HANDMEM];
+        int published[5];
+    } HxState;
+
+    static HxState helix;
+    static HxConfig config;
+    static int shownReset = 1;
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+    static void hx_reset(HxState* s) {
+        memset(s, 0, sizeof(*s));
+        /* Start as a Blaze Dusk Keen Crackling creature (Moonwhisker):
+         * A/A, G/G, G/C, T/T. */
+        s->allele[0][0] = 0; s->allele[1][0] = 0;
+        s->allele[0][1] = 0; s->allele[1][1] = 0;
+        s->allele[0][2] = 1; s->allele[1][2] = 0;
+        s->allele[0][3] = 1; s->allele[1][3] = 1;
+        for (int i = 0; i < 5; i++) { s->published[i] = -1; }
+    }
+
+    /* ----------------------------------------------------- the layout */
+
+    typedef struct {
+        SpVec2 centre, along, front;  /* along the long side, towards the front long edge */
+        double halfLong, halfShort;
+        double x0, x1;                /* the helixes' ends, m along from the centre */
+        int nBases, site[4];          /* base index of each SNP */
+        SpVec2 creatureAt;
+    } HxLayout;
+
+    static int hx_layout(const SpVec2* f, int nf, HxLayout* L) {
+        if (nf != 4) { return 0; }
+        double l[4];
+        for (int k = 0; k < 4; k++) { l[k] = sp_dist2(f[k], f[(k + 1) % 4]); }
+        int a = (l[1] + l[3] < l[0] + l[2]) ? 1 : 0, b = a + 2;   /* the short edges */
+        SpVec2 ma = sp_scale2(sp_add2(f[a], f[(a + 1) % 4]), 0.5), mb = sp_scale2(sp_add2(f[b], f[(b + 1) % 4]), 0.5);
+        if (mb.x < ma.x) { SpVec2 t = ma; ma = mb; mb = t; }
+        L->centre = sp_polygon_centroid(f, nf);
+        L->along = gm_unit(sp_sub2(mb, ma), sp_v2(1, 0));
+        L->front = sp_v2(-L->along.y, L->along.x);
+        if (L->front.y < 0) { L->front = sp_scale2(L->front, -1); }   /* the image's bottom edge is the front */
+        L->halfLong = sp_dist2(ma, mb) / 2;
+        L->halfShort = (l[a] + l[b]) / 4;
+        L->x0 = -L->halfLong * 0.92;
+        L->x1 = L->halfLong * 0.32;
+        L->nBases = (int)((L->x1 - L->x0) / config.spacing) + 1;
+        if (L->nBases > HX_MAXBASES) { L->nBases = HX_MAXBASES; }
+        if (L->nBases < 12) { return 0; }
+        for (int s = 0; s < 4; s++) { L->site[s] = (int)round((0.14 + s * 0.24) * (L->nBases - 1)); }
+        L->creatureAt = sp_add2(L->centre, sp_add2(sp_scale2(L->along, L->halfLong * 0.64), sp_scale2(L->front, -0.03)));
+        return 1;
+    }
+    /* A point: x m along from the centre, y m towards the front. */
+    static SpVec2 hx_at(const HxLayout* L, double x, double y) {
+        return sp_add2(L->centre, sp_add2(sp_scale2(L->along, x), sp_scale2(L->front, y)));
+    }
+    static double hx_copy_y(int c) { return (c == 0 ? -0.55 : 0.45) * config.copyGap; }
+    static double hx_base_x(const HxLayout* L, int i) { return L->x0 + i * config.spacing; }
+
+    /* The filler bases between the SNPs: the same on both copies. */
+    static char hx_filler(int i) {
+        static const char B[4] = {'A', 'C', 'G', 'T'};
+        unsigned h = (unsigned)i * 2654435761u;
+        return B[(h >> 13) & 3];
+    }
+    static char hx_base(const HxState* s, const HxLayout* L, int c, int i) {
+        for (int k = 0; k < 4; k++) { if (L->site[k] == i) { return SITES[k].letter[s->allele[c][k]]; } }
+        return hx_filler(i);
+    }
+
+    /* How open copy c is at x (0..1). */
+    static double hx_open_at(const HxState* s, int c, double x) {
+        double d = (x - s->openAt[c]) / config.unzipWidth;
+        return s->open[c] * exp(-d * d);
+    }
+
+    typedef struct { char s[4096]; int n; } HxLabels;
+    static void hx_label(HxLabels* lb, const HxLayout* L, const SpTableMap* M, SpVec2 at,
+                         const char* text, double height, GmColor col) {
+        SpVec2 a, b;
+        if (!sp_table_to_display(M, at, &a) || !sp_table_to_display(M, sp_add2(at, sp_scale2(L->along, 0.05)), &b)) { return; }
+        double dx = b.x - a.x, dy = b.y - a.y, pxPerM = hypot(dx, dy) / 0.05;
+        int room = (int)sizeof(lb->s) - lb->n;
+        if (room < 300) { return; }
+        lb->n += snprintf(lb->s + lb->n, room, "%s{{%.1f %.1f} %.3f %.1f {%s} {%.3f %.3f %.3f %.3f}}",
+                          lb->n ? " " : "", a.x, a.y, atan2(-dy, dx), height * pxPerM, text, col.r, col.g, col.b, col.a);
+    }
+}
+
+$cc proc configure {Jim_Obj* settings} void {
+    HxConfig c;
+    memset(&c, 0, sizeof(c));
+    #define SET(name) sp_jim_dict_double(interp, settings, #name, 0, 0, &c.name)
+    SET(spacing); SET(radius); SET(turn); SET(spin); SET(copyGap); SET(siteReach); SET(dwellFlip);
+    SET(grabReach); SET(pullFull); SET(unzipWidth); SET(zipBack); SET(creatureSize); SET(textHeight);
+    #undef SET
+    pthread_mutex_lock(&lock);
+    config = c;
+    pthread_mutex_unlock(&lock);
+}
+
+$cc proc reset {} void {
+    pthread_mutex_lock(&lock);
+    hx_reset(&helix);
+    shownReset = 1;
+    pthread_mutex_unlock(&lock);
+}
+
+# Sets copy C's (1 or 2) letters at the four SNPs: {0|1 0|1 0|1 0|1} (tests, demos).
+$cc proc setAlleles {int c Jim_Obj* alleles} void {
+    double v[4];
+    if (c < 1 || c > 2 || !sp_jim_doubles(interp, alleles, v, 4)) { FOLK_ERROR("dnahelix: setAlleles C {4 alleles}"); }
+    pthread_mutex_lock(&lock);
+    for (int k = 0; k < 4; k++) { helix.allele[c - 1][k] = v[k] != 0; }
+    pthread_mutex_unlock(&lock);
+}
+
+# The state, for tests: {creature NAME genotypes {AA GG ..} open {O1 O2}}.
+$cc proc state {} Jim_Obj* {
+    pthread_mutex_lock(&lock);
+    HxState s = helix;
+    pthread_mutex_unlock(&lock);
+    Jim_Obj* r = Jim_NewListObj(interp, NULL, 0);
+    sp_jim_put(interp, r, "creature", Jim_NewStringObj(interp, CREATURES[hx_creature(s.allele)].name, -1));
+    Jim_Obj* g = Jim_NewListObj(interp, NULL, 0);
+    for (int k = 0; k < 4; k++) {
+        char t[3] = {SITES[k].letter[s.allele[0][k]], SITES[k].letter[s.allele[1][k]], 0};
+        Jim_ListAppendElement(interp, g, Jim_NewStringObj(interp, t, 2));
+    }
+    sp_jim_put(interp, r, "genotypes", g);
+    Jim_Obj* o = Jim_NewListObj(interp, NULL, 0);
+    Jim_ListAppendElement(interp, o, Jim_NewDoubleObj(interp, s.open[0]));
+    Jim_ListAppendElement(interp, o, Jim_NewDoubleObj(interp, s.open[1]));
+    sp_jim_put(interp, r, "open", o);
+    return r;
+}
+
+# Advances to `now` (s) and draws. Returns {creature NAME genotypes {..}
+# changed 0|1 draws {PIPELINE INSTANCES ...} labels {...} labelsChanged
+# 0|1 notes {{n v s} ...}}.
+$cc proc step {double now Jim_Obj* map Jim_Obj* poses
+               Jim_Obj* viewport Jim_Obj* surfaceToClip} Jim_Obj* {
+    SpTableMap M;
+    if (!sp_jim_table_map(interp, map, &M)) { FOLK_ERROR("dnahelix: not a table map"); }
+    SpVec2 fp[GM_POLY_MAX];
+    int nf = sp_jim_vec2s(interp, sp_jim_dict_get(interp, map, "footprint"), fp, GM_POLY_MAX);
+    GmHand hands[GM_MAX_HANDS];
+    int nh = gm_read_hands(interp, poses, hands, GM_MAX_HANDS);
+    GmCanvas canvas;
+    gm_canvas_init(interp, &canvas, &M, viewport, surfaceToClip);
+    GmNotes notes; notes.count = 0;
+    static HxLabels labels, shown;
+    labels.n = 0; labels.s[0] = 0;
+    char buf[256];
+
+    pthread_mutex_lock(&lock);
+    HxState* s = &helix;
+    HxConfig* c = &config;
+    HxLayout L;
+    int before = hx_creature(s->allele);
+    if (hx_layout(fp, nf, &L)) {
+        double dt = s->t > 0 ? now - s->t : 0;
+        if (dt < 0) { dt = 0; }
+        if (dt > 0.05) { dt = 0.05; }
+        s->t = now;
+
+        /* Hands: which began a pinch, and where each pinches. */
+        int pinchStart[GM_MAX_HANDS];
+        SpVec2 pinchAt[GM_MAX_HANDS];
+        for (int i = 0; i < nh; i++) {
+            int slot = -1, free = -1;
+            for (int m = 0; m < HX_HANDMEM; m++) {
+                if (s->hand[m].id == hands[i].id && s->hand[m].seen > 0) { slot = m; break; }
+                if (free < 0 && (s->hand[m].seen <= 0 || now - s->hand[m].seen > 2)) { free = m; }
+            }
+            int was = 0;
+            if (slot >= 0) { was = s->hand[slot].pinch; } else { slot = free >= 0 ? free : 0; }
+            pinchStart[i] = hands[i].pinching && !was;
+            s->hand[slot].id = hands[i].id; s->hand[slot].pinch = hands[i].pinching; s->hand[slot].seen = now;
+            pinchAt[i] = hands[i].nc > 2 ? sp_scale2(sp_add2(gm_collider_at(&hands[i], 1, now, 0.05), gm_collider_at(&hands[i], 2, now, 0.05)), 0.5)
+                                         : gm_collider_at(&hands[i], 0, now, 0.05);
+        }
+
+        /* Swapping a letter: a pinch on a glowing rung, or a fingertip held on it. */
+        for (int cp = 0; cp < 2; cp++) {
+            for (int k = 0; k < 4; k++) {
+                SpVec2 at = hx_at(&L, hx_base_x(&L, L.site[k]), hx_copy_y(cp));
+                int touched = 0, pinched = 0;
+                for (int h = 0; h < nh; h++) {
+                    for (int q = hands[h].nc > 1 ? 1 : 0; q < hands[h].nc; q++) {
+                        if (sp_dist2(gm_collider_at(&hands[h], q, now, 0.05), at) < c->siteReach) { touched = 1; }
+                    }
+                    if (pinchStart[h] && sp_dist2(pinchAt[h], at) < c->siteReach * 1.3) { pinched = 1; pinchStart[h] = 0; }
+                }
+                int flip = pinched;
+                if (touched) {
+                    s->dwell[cp][k] += dt;
+                    if (!s->latched[cp][k] && s->dwell[cp][k] >= c->dwellFlip) { flip = 1; }
+                } else { s->dwell[cp][k] = 0; s->latched[cp][k] = 0; }
+                if (flip && !s->latched[cp][k]) {
+                    s->allele[cp][k] ^= 1;
+                    s->latched[cp][k] = 1; s->flash[cp][k] = 0.6;
+                    gm_note(&notes, gm_scale_note(0.2 + 0.2 * k), 70, 0.3);
+                }
+                s->flash[cp][k] = fmax(0, s->flash[cp][k] - dt);
+            }
+        }
+
+        /* Unzipping: a pinch on a helix (not on a rung), pulled away from it. */
+        for (int cp = 0; cp < 2; cp++) {
+            int held = 0;
+            for (int h = 0; h < nh; h++) {
+                SpVec2 rel = sp_sub2(pinchAt[h], L.centre);
+                double x = sp_dot2(rel, L.along), y = sp_dot2(rel, L.front) - hx_copy_y(cp);
+                if (pinchStart[h] && x > L.x0 && x < L.x1 && fabs(y) < c->grabReach && s->grabHand[cp] == 0) {
+                    s->grabHand[cp] = hands[h].id;
+                }
+                if (s->grabHand[cp] == hands[h].id && hands[h].pinching) {
+                    held = 1;
+                    s->openAt[cp] = fmax(L.x0, fmin(L.x1, x));
+                    s->open[cp] = fmin(1, fabs(y) / c->pullFull);
+                }
+            }
+            if (!held) {
+                s->grabHand[cp] = 0;
+                s->open[cp] = fmax(0, s->open[cp] - dt * c->zipBack);
+            }
+        }
+
+        int after = hx_creature(s->allele);
+        if (after != before) {
+            s->changed = 0.8;
+            gm_note(&notes, 72, 80, 0.5); gm_note(&notes, 76, 70, 0.5); gm_note(&notes, 79, 70, 0.5);
+        }
+        s->changed = fmax(0, s->changed - dt);
+
+        /* ------------------------------ drawing ------------------------------ */
+        double phase = now * c->spin * 2 * M_PI;
+        for (int cp = 0; cp < 2; cp++) {
+            double y0 = hx_copy_y(cp);
+            SpVec2 prev[2]; int havePrev = 0;
+            for (int i = 0; i < L.nBases; i++) {
+                double x = hx_base_x(&L, i), w = hx_open_at(s, cp, x);
+                double a = phase + 2 * M_PI * i / c->turn;
+                double amp = c->radius * (1 - w), gap = w * 0.06;
+                /* The two backbones, and how near each is (for brightness). */
+                SpVec2 bb[2];
+                double depth[2];
+                for (int k = 0; k < 2; k++) {
+                    double ang = a + k * M_PI;
+                    double y = y0 + amp * sin(ang) + (k == 0 ? -gap : gap);
+                    bb[k] = hx_at(&L, x, y);
+                    depth[k] = 0.35 + 0.65 * (0.5 + 0.5 * cos(ang) * (1 - w) + 0.5 * w);
+                }
+                /* The backbones in steps of two bases (half the beams; the turn still reads smooth). */
+                int stepEnd = (i % 2 == 0) || i == L.nBases - 1;
+                for (int k = 0; k < 2 && stepEnd; k++) {
+                    if (havePrev) {
+                        gm_beam(&canvas, prev[k], bb[k], 0.0045, 0.001, 1.0, gm_rgba(0.75f, 0.85f, 1.0f, (float)(0.9 * depth[k])));
+                    }
+                    prev[k] = bb[k];
+                }
+                if (stepEnd) { havePrev = 1; }
+                /* The rung: a base pair, its two halves in their bases' colours. */
+                char b0 = hx_base(s, &L, cp, i), b1 = hx_pair(b0);
+                SpVec2 mid = sp_scale2(sp_add2(bb[0], bb[1]), 0.5);
+                SpVec2 dir = gm_unit(sp_sub2(bb[1], bb[0]), L.front);
+                double half = sp_dist2(bb[0], bb[1]) / 2, cut = fmin(half, gap * 0.8);
+                float rd = (float)(0.55 + 0.45 * (depth[0] + depth[1]) / 2);
+                int site = -1;
+                for (int k = 0; k < 4; k++) { if (L.site[k] == i) { site = k; } }
+                double width = site >= 0 ? 0.007 : 0.0035, glow = site >= 0 ? 0.002 : 0;
+                if (half > 0.002) {
+                    gm_beam(&canvas, bb[0], sp_sub2(mid, sp_scale2(dir, cut)), width, glow, 1.0, ca_hex(hx_base_color(b0), rd));
+                    gm_beam(&canvas, bb[1], sp_add2(mid, sp_scale2(dir, cut)), width, glow, 1.0, ca_hex(hx_base_color(b1), rd));
+                }
+                if (site >= 0) {
+                    double fl = s->flash[cp][site];
+                    double prog = s->dwell[cp][site] > 0 && !s->latched[cp][site] ? fmin(1, s->dwell[cp][site] / c->dwellFlip) : 0;
+                    SpVec2 at = hx_at(&L, x, y0);
+                    gm_dot(&canvas, at, 0.026, 0.029, 0.003 + 0.008 * fl, gm_rgba(1, 1, 1, (float)(0.45 + 0.5 * fl + 0.2 * sin(now * 3 + site))));
+                    if (prog > 0) { gm_dot(&canvas, at, 0.031, 0.031 + 0.006 * prog, 0.004, gm_rgba(1, 1, 1, 0.8f)); }
+                }
+            }
+            snprintf(buf, sizeof(buf), "Copy %d", cp + 1);
+            hx_label(&labels, &L, &M, hx_at(&L, L.x0 - 0.01, y0 - c->radius - 0.025), buf, c->textHeight * 0.8, gm_rgba(1, 1, 1, 0.6f));
+        }
+
+        /* Each SNP's name and its two letters, under the front copy. */
+        int genes[4];
+        hx_genes(s->allele, genes);
+        for (int k = 0; k < 4; k++) {
+            double x = hx_base_x(&L, L.site[k]);
+            int side = k == 0 ? genes[0] : k == 1 ? genes[1] : k == 2 ? genes[2] : genes[3];
+            snprintf(buf, sizeof(buf), "%s %s\n%s\n%c / %c  %s", SITES[k].gene, SITES[k].rs, SITES[k].about,
+                     SITES[k].letter[s->allele[0][k]], SITES[k].letter[s->allele[1][k]], SIDES[k][side]);
+            hx_label(&labels, &L, &M, hx_at(&L, x, hx_copy_y(1) + c->radius + 0.06), buf, c->textHeight * 0.8, gm_rgba(1, 1, 1, 0.9f));
+        }
+
+        /* The creature, with a burst of light when it changes. */
+        int idx = hx_creature(s->allele);
+        const CaCreature* cr = &CREATURES[idx];
+        double size = c->creatureSize * (1 + 0.25 * s->changed);
+        ca_draw_creature(&canvas, idx, L.creatureAt, sp_scale2(L.along, -1), size, now, 1.0f, genes[1] == 0);
+        if (s->changed > 0) {
+            gm_dot(&canvas, L.creatureAt, size * (2.6 - s->changed * 1.5), size * (2.7 - s->changed * 1.5), 0.01,
+                   ca_hex(cr->glow, (float)(s->changed / 0.8)));
+        }
+        snprintf(buf, sizeof(buf), "%s\n%s  %s  %s  %s", cr->name, SIDES[0][genes[0]], SIDES[1][genes[1]],
+                 SIDES[2][genes[2]], SIDES[3][genes[3]]);
+        hx_label(&labels, &L, &M, sp_add2(L.creatureAt, sp_scale2(L.front, c->creatureSize * 2.6)), buf, c->textHeight, ca_hex(cr->glow, 1));
+    }
+    int idx = hx_creature(s->allele);
+    int pub[5] = {idx, s->allele[0][0] * 2 + s->allele[1][0], s->allele[0][1] * 2 + s->allele[1][1],
+                  s->allele[0][2] * 2 + s->allele[1][2], s->allele[0][3] * 2 + s->allele[1][3]};
+    int changed = 0;
+    for (int i = 0; i < 5; i++) { if (pub[i] != s->published[i]) { changed = 1; s->published[i] = pub[i]; } }
+    if (shownReset) { shown.n = -1; shownReset = 0; }
+    int labelsChanged = canvas.on && (labels.n != shown.n || memcmp(labels.s, shown.s, labels.n) != 0);
+    if (labelsChanged) { shown = labels; }
+    Jim_Obj* g = Jim_NewListObj(interp, NULL, 0);
+    for (int k = 0; k < 4; k++) {
+        char t[3] = {SITES[k].letter[s->allele[0][k]], SITES[k].letter[s->allele[1][k]], 0};
+        Jim_ListAppendElement(interp, g, Jim_NewStringObj(interp, t, 2));
+    }
+    pthread_mutex_unlock(&lock);
+
+    Jim_Obj* result = Jim_NewListObj(interp, NULL, 0);
+    sp_jim_put(interp, result, "creature", Jim_NewStringObj(interp, CREATURES[idx].name, -1));
+    sp_jim_put(interp, result, "genotypes", g);
+    sp_jim_put(interp, result, "changed", Jim_NewIntObj(interp, changed));
+    sp_jim_put(interp, result, "draws", gm_canvas_result(interp, &canvas));
+    sp_jim_put(interp, result, "labels", Jim_NewStringObj(interp, labels.s, labels.n));
+    sp_jim_put(interp, result, "labelsChanged", Jim_NewIntObj(interp, labelsChanged));
+    sp_jim_put(interp, result, "notes", gm_notes_result(interp, &notes));
+    return result;
+}
+set helixLib [$cc compile]
+$helixLib configure $HELIX_SETTINGS
+$helixLib reset
+
+Claim the dna helix library is $helixLib
+
+# The table menu: DNA Helix.
+Claim table menu item dnahelix with label {DNA Helix} color {0.29 0.87 0.50 1} order 72 \
+    toggles {dnahelix is shown}
+
+When the collected results for [list /someone/ wishes dnahelix is shown] are /wishes/ {
+    if {[llength $wishes] > 0} {
+        Hold! -on $helixThis -key {helix wanted} Claim dnahelix is wanted
+    } else {
+        Hold! -on $helixThis -key {helix wanted} {}
+        Hold! -on $helixThis -key {helix state} {}
+        $helixLib reset
+    }
+}
+
+When dnahelix is wanted {
+    Wish hands are tracked
+    Wish hands are tracked with profile [dict get $HELIX_SETTINGS trackingProfile]
+}
+
+When dnahelix is wanted &\
+     camera /camera/ is the table camera for display /display/ &\
+     the table map from camera /camera/ to display /display/ is /map/ {
+
+    When -atomicallyWithKey [list $helixThis dnahelix $display] the frame clock time is /t/ {
+        set poses [lmap r [Query! hand /h/ has pose /pose/] { dict get $r pose }]
+        set viewport ""; set surfaceToClip ""; set canvas ""
+        set canvases [Query! $display has canvas /canvas/ with /...options/]
+        set projections [Query! $display has canvas projection /s2c/]
+        if {[llength $canvases] > 0 && [llength $projections] > 0} {
+            set c [lindex $canvases 0]
+            set canvas [dict get $c canvas]
+            set viewport [list [dict get $c options width] [dict get $c options height]]
+            set surfaceToClip [dict get [lindex $projections 0] s2c]
+        }
+
+        set result [$helixLib step $t $map $poses $viewport $surfaceToClip]
+
+        if {$canvas ne ""} {
+            dict for {pipeline instances} [dict get $result draws] {
+                Wish the GPU draws pipeline $pipeline onto canvas $canvas \
+                    with instances $instances layer [dict get $HELIX_LAYERS $pipeline]
+            }
+        }
+        if {[dict get $result labelsChanged]} {
+            Hold! -on $helixThis -key [list helix labels $display] \
+                Claim the dna helix labels on $display are [dict get $result labels]
+        }
+        foreach note [dict get $result notes] {
+            lassign $note n v s
+            Notify: game note $n velocity $v for $s
+        }
+        if {[dict get $result changed]} {
+            Hold! -on $helixThis -key {helix state} \
+                Claim the dna helix shows [dict get $result creature] with genotypes [dict get $result genotypes]
+        }
+    }
+}
+
+# The labels, drawn while they are held (and it is shown).
+When dnahelix is wanted & the dna helix labels on /display/ are /labels/ {
+    foreach label $labels {
+        lassign $label position radians scale text color
+        Wish to draw text onto $display with position $position text $text \
+            scale $scale radians $radians color $color anchor center layer $HELIX_TEXT_LAYER
+    }
+}
