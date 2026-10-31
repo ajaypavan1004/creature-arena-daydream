@@ -113,6 +113,27 @@ check {[lindex [st $arena f2] 2] < 150} "the pinch bit player 2's creature: [st 
 check {[waitFor {test saw a hit on 2 for /d/} 2] ne ""} "and told it as an event"
 waitForNone {hand 25 has pose /p/} 2
 
+# 4b. Two hands: the hand nearest its creature steers, the other acts.
+# A pinch of the steering hand doesn't bite; the other hand's does.
+$arena place 1 -70 0 150
+$arena place 2 70 0 150
+set hp [lindex [st $arena f2] 2]
+set steerOpen [handFrom 1 26 open palm [world -70 0]]
+set steerPinch [handFrom 1 26 pinch palm [world -70 0]]
+set actOpen [handFrom 1 27 open palm [world -70 -300]]
+set actPinch [handFrom 1 27 pinch palm [world -70 -300]]
+feedHands $lib $map $camera [list $steerOpen $actOpen] 10
+feedHands $lib $map $camera [list $steerPinch $actOpen] 15
+check {[lindex [st $arena f2] 2] == $hp} "two hands: the steering hand's pinch doesn't bite: [st $arena f2]"
+$arena place 1 -70 0 150
+$arena place 2 70 0 150
+feedHands $lib $map $camera [list $steerOpen $actOpen] 10
+feedHands $lib $map $camera [list $steerOpen $actPinch] 15
+removeHand 26; removeHand 27
+check {[lindex [st $arena f2] 2] < $hp} "two hands: the other hand's pinch bites: [st $arena f2]"
+waitForNone {hand 26 has pose /p/} 2
+waitForNone {hand 27 has pose /p/} 2
+
 # 5. The genes decide the power ups.
 $arena place 1 -300 0 150
 $arena place 2 300 0 150

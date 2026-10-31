@@ -20,9 +20,10 @@ open palm on the ring that says "Palm here". The fight counts down once both pla
 ready.
 
 **Fight.**
-- Your creature runs towards your hand.
-- Pinch to bite. The bite aims at the other creature when it's close.
-- Make a fist to sprint. How long you can sprint depends on your muscle type.
+- Your creature runs towards your hand: the one of yours nearest it steers.
+- Your other hand acts. Pinch to bite; the bite aims at the other creature when it's close.
+- Make a fist with it to sprint. How long you can sprint depends on your muscle type.
+- With one hand, it steers and acts. (`twoHands 0` in ARENA_SETTINGS: any of your hands acts.)
 - Your health and stamina bars run along your end of the table.
 
 The first creature to empty the other's health wins. After the win the table goes back to
