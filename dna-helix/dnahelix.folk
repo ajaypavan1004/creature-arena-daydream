@@ -36,6 +36,12 @@
 
 set gamesDir "[pwd]/kits/games"
 set spatialDir "[pwd]/kits/spatial"
+# The creatures' paintings: art/ beside this folder (the arena's atlas,
+# made by tools/atlas.py on the table-paintings branch). Without it the
+# creature is drawn as light.
+set helixDir [file dirname [file normalize $this]]
+set artDir [file normalize $helixDir/../art]
+if {![file exists $artDir/atlas.h]} { set artDir [file normalize [pwd]/art] }
 
 # Lengths m, times s.
 set HELIX_SETTINGS {
@@ -45,13 +51,13 @@ set HELIX_SETTINGS {
     grabReach 0.06 pullFull 0.08 unzipWidth 0.12 zipBack 1.5
     creatureSize 0.05 textHeight 0.02
 }
-set HELIX_LAYERS {fillTriangle 91 games-beam 92 games-dot 94}
+set HELIX_LAYERS {hx-sprite 90.5 fillTriangle 91 games-beam 92 hx-strand 93 games-dot 94}
 set HELIX_TEXT_LAYER 96
 
 set helixThis $this
 
 set cc [C]
-$cc cflags -I$spatialDir -I$gamesDir
+$cc cflags -I$spatialDir -I$gamesDir -I$artDir
 $cc include <math.h>
 $cc include <string.h>
 $cc include <pthread.h>
@@ -60,6 +66,13 @@ $cc include "spatial_jim.h"
 $cc include "physics.h"
 $cc include "games_jim.h"
 $cc code {
+    #if __has_include("atlas.h")
+    #include "atlas.h"
+    #define HX_ART 1
+    #else
+    #define HX_ART 0
+    #endif
+
     enum { T_PLUME = 1, T_EARS = 2, T_NECK = 4, T_MANE = 8, T_WINGS = 16, T_FINS = 32,
            T_ARMOUR = 64, T_COIL = 128, T_SPINES = 256, T_HORNS = 512 };
     typedef struct { const char* name; unsigned body, light, glow; int traits; } CaCreature;
@@ -304,6 +317,43 @@ $cc code {
         return s->open[c] * exp(-d * d);
     }
 
+    /* The backbones' shape, shared with the hx-strand pipeline's shader:
+     * at x (m along), strand k (0, 1) sits `hx_strand_off` m towards the
+     * front of the copy's line, turned by the angle a; the second strand
+     * is HX_GROOVE behind the first, so the helix shows a major and a
+     * minor groove as real DNA does. */
+    #define HX_GROOVE 2.26
+    #define HX_GAP 0.06
+    static double hx_angle(const HxLayout* L, double x, double phase) {
+        return phase + 2 * M_PI * (x - L->x0) / (config.spacing * config.turn);
+    }
+    static double hx_strand_off(const HxState* s, const HxLayout* L, int cp, int k, double x, double phase, double* depth) {
+        double w = hx_open_at(s, cp, x), a = hx_angle(L, x, phase) + k * HX_GROOVE;
+        if (depth) { *depth = w + (1 - w) * (0.5 + 0.5 * cos(a)); }
+        return config.radius * (1 - w) * sin(a) + (k == 0 ? -1 : 1) * HX_GAP * w;
+    }
+
+    /* A textured quad (the arena's ca-sprite, as hx-sprite): centred at c
+     * (m), its top towards `up`, half sizes hw and hh (m). */
+    #if HX_ART
+    static void hx_sprite(GmCanvas* cv, GmBuf* buf, int* n, int tex, SpVec2 c, SpVec2 up, double hw, double hh,
+                          const CaCell* k, int flip, float flash, float alpha) {
+        if (!cv->on || alpha <= 0.003f) { return; }
+        SpVec2 right = sp_v2(-up.y, up.x);
+        SpVec2 pc, pr, pt;
+        if (!sp_table_to_display(cv->M, c, &pc) || !sp_table_to_display(cv->M, sp_add2(c, sp_scale2(right, hw)), &pr) ||
+            !sp_table_to_display(cv->M, sp_add2(c, sp_scale2(up, hh)), &pt)) { return; }
+        double ux = pr.x - pc.x, uy = pr.y - pc.y, vx = pc.x - pt.x, vy = pc.y - pt.y, uu = ux * ux + uy * uy;
+        if (uu < 1e-6) { return; }
+        double aspect = (-uy * vx + ux * vy) / uu;
+        float u0 = k->u0, u1 = k->u1;
+        if (flip) { float t = u0; u0 = u1; u1 = t; }
+        gm_buf_printf(buf, "%s{%s %d %.4f {%.1f %.1f %.2f %.2f} {%.6f %.6f %.6f %.6f} {%.3f 0 %.3f 1}}",
+                      *n ? " " : "", cv->head, tex, aspect, pc.x, pc.y, ux, uy, u0, k->v0, u1, k->v1, flash, alpha);
+        (*n)++;
+    }
+    #endif
+
     typedef struct { char s[4096]; int n; } HxLabels;
     static void hx_label(HxLabels* lb, const HxLayout* L, const SpTableMap* M, SpVec2 at,
                          const char* text, double height, GmColor col) {
@@ -369,7 +419,7 @@ $cc proc state {} Jim_Obj* {
 # changed 0|1 draws {PIPELINE INSTANCES ...} labels {...} labelsChanged
 # 0|1 notes {{n v s} ...}}.
 $cc proc step {double now Jim_Obj* map Jim_Obj* poses
-               Jim_Obj* viewport Jim_Obj* surfaceToClip} Jim_Obj* {
+               Jim_Obj* viewport Jim_Obj* surfaceToClip Jim_Obj* textures} Jim_Obj* {
     SpTableMap M;
     if (!sp_jim_table_map(interp, map, &M)) { FOLK_ERROR("dnahelix: not a table map"); }
     SpVec2 fp[GM_POLY_MAX];
@@ -381,6 +431,13 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
     GmNotes notes; notes.count = 0;
     static HxLabels labels, shown;
     labels.n = 0; labels.s[0] = 0;
+    GmBuf strands; memset(&strands, 0, sizeof(strands)); int nStrands = 0;
+    GmBuf sprites; memset(&sprites, 0, sizeof(sprites)); int nSprites = 0;
+    long tex = -1;
+    if (canvas.on && Jim_ListLength(interp, textures) == 1) {
+        jim_wide t;
+        if (Jim_GetWide(interp, Jim_ListGetIndex(interp, textures, 0), &t) == JIM_OK) { tex = (long)t; }
+    }
     char buf[256];
 
     pthread_mutex_lock(&lock);
@@ -466,37 +523,38 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
 
         /* ------------------------------ drawing ------------------------------ */
         double phase = now * c->spin * 2 * M_PI;
+        double xLast = hx_base_x(&L, L.nBases - 1), xc = (L.x0 + xLast) / 2, halfLen = (xLast - L.x0) / 2 + c->spacing * 0.5;
+        double H = c->radius + HX_GAP + 0.012;      /* the strand quad's half height */
         for (int cp = 0; cp < 2; cp++) {
             double y0 = hx_copy_y(cp);
-            SpVec2 prev[2]; int havePrev = 0;
+            /* The two backbones: one smooth curved quad each copy, drawn by
+             * the hx-strand shader with the same shape as hx_strand_off. */
+            if (canvas.on) {
+                SpVec2 cen = hx_at(&L, xc, y0), pc, pr, pt;
+                if (sp_table_to_display(&M, cen, &pc) && sp_table_to_display(&M, hx_at(&L, xc + halfLen, y0), &pr) &&
+                    sp_table_to_display(&M, hx_at(&L, xc, y0 + H), &pt)) {
+                    double ux = pr.x - pc.x, uy = pr.y - pc.y, vx = pt.x - pc.x, vy = pt.y - pc.y, uu = ux * ux + uy * uy;
+                    double aspect = (-uy * vx + ux * vy) / uu;
+                    double turns = 2 * halfLen / (c->spacing * c->turn);
+                    double a0 = hx_angle(&L, xc - halfLen, phase);
+                    gm_buf_printf(&strands, "%s{%s {%.1f %.1f %.2f %.2f} %.5f {%.5f %.5f %.5f %.5f} {%.5f %.5f %.5f %.5f} {0.78 0.88 1.0 0.95}}",
+                                  nStrands ? " " : "", canvas.head, pc.x, pc.y, ux, uy, aspect,
+                                  turns, a0, c->radius / H, 0.0032 / H,
+                                  (s->openAt[cp] - xc) / halfLen, s->open[cp], c->unzipWidth / halfLen, HX_GAP / H);
+                    nStrands++;
+                }
+            }
             for (int i = 0; i < L.nBases; i++) {
-                double x = hx_base_x(&L, i), w = hx_open_at(s, cp, x);
-                double a = phase + 2 * M_PI * i / c->turn;
-                double amp = c->radius * (1 - w), gap = w * 0.06;
-                /* The two backbones, and how near each is (for brightness). */
+                double x = hx_base_x(&L, i), w = hx_open_at(s, cp, x), gap = w * HX_GAP;
                 SpVec2 bb[2];
                 double depth[2];
-                for (int k = 0; k < 2; k++) {
-                    double ang = a + k * M_PI;
-                    double y = y0 + amp * sin(ang) + (k == 0 ? -gap : gap);
-                    bb[k] = hx_at(&L, x, y);
-                    depth[k] = 0.35 + 0.65 * (0.5 + 0.5 * cos(ang) * (1 - w) + 0.5 * w);
-                }
-                /* The backbones in steps of two bases (half the beams; the turn still reads smooth). */
-                int stepEnd = (i % 2 == 0) || i == L.nBases - 1;
-                for (int k = 0; k < 2 && stepEnd; k++) {
-                    if (havePrev) {
-                        gm_beam(&canvas, prev[k], bb[k], 0.0045, 0.001, 1.0, gm_rgba(0.75f, 0.85f, 1.0f, (float)(0.9 * depth[k])));
-                    }
-                    prev[k] = bb[k];
-                }
-                if (stepEnd) { havePrev = 1; }
+                for (int k = 0; k < 2; k++) { bb[k] = hx_at(&L, x, y0 + hx_strand_off(s, &L, cp, k, x, phase, &depth[k])); }
                 /* The rung: a base pair, its two halves in their bases' colours. */
                 char b0 = hx_base(s, &L, cp, i), b1 = hx_pair(b0);
                 SpVec2 mid = sp_scale2(sp_add2(bb[0], bb[1]), 0.5);
                 SpVec2 dir = gm_unit(sp_sub2(bb[1], bb[0]), L.front);
                 double half = sp_dist2(bb[0], bb[1]) / 2, cut = fmin(half, gap * 0.8);
-                float rd = (float)(0.55 + 0.45 * (depth[0] + depth[1]) / 2);
+                float rd = (float)(0.35 + 0.65 * (depth[0] + depth[1]) / 2);
                 int site = -1;
                 for (int k = 0; k < 4; k++) { if (L.site[k] == i) { site = k; } }
                 double width = site >= 0 ? 0.007 : 0.0035, glow = site >= 0 ? 0.002 : 0;
@@ -531,14 +589,27 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
         int idx = hx_creature(s->allele);
         const CaCreature* cr = &CREATURES[idx];
         double size = c->creatureSize * (1 + 0.25 * s->changed);
-        ca_draw_creature(&canvas, idx, L.creatureAt, sp_scale2(L.along, -1), size, now, 1.0f, genes[1] == 0);
+        double picH = c->creatureSize * 4.2;        /* the painting's height, m */
+        int painted = 0;
+        #if HX_ART
+        if (tex >= 0) {
+            /* The creature's painting, upright for the front edge, facing the helixes,
+             * breathing a little, flashing white as it changes. */
+            const CaCell* k = &CA_CELLS[CA_STILL[idx]];
+            double hh = picH * 0.5 * (1 + 0.015 * sin(now * 2.4)), hw = hh * k->w / k->h;
+            hx_sprite(&canvas, &sprites, &nSprites, (int)tex, L.creatureAt, sp_scale2(L.front, -1), hw, hh, k,
+                      !CA_FACES_LEFT[idx], (float)(s->changed / 0.8 * 0.85), 1.0f);
+            painted = 1;
+        }
+        #endif
+        if (!painted) { ca_draw_creature(&canvas, idx, L.creatureAt, sp_scale2(L.along, -1), size, now, 1.0f, genes[1] == 0); }
         if (s->changed > 0) {
             gm_dot(&canvas, L.creatureAt, size * (2.6 - s->changed * 1.5), size * (2.7 - s->changed * 1.5), 0.01,
                    ca_hex(cr->glow, (float)(s->changed / 0.8)));
         }
         snprintf(buf, sizeof(buf), "%s\n%s  %s  %s  %s", cr->name, SIDES[0][genes[0]], SIDES[1][genes[1]],
                  SIDES[2][genes[2]], SIDES[3][genes[3]]);
-        hx_label(&labels, &L, &M, sp_add2(L.creatureAt, sp_scale2(L.front, c->creatureSize * 2.6)), buf, c->textHeight, ca_hex(cr->glow, 1));
+        hx_label(&labels, &L, &M, sp_add2(L.creatureAt, sp_scale2(L.front, painted ? picH * 0.5 + 0.035 : c->creatureSize * 2.6)), buf, c->textHeight, ca_hex(cr->glow, 1));
     }
     int idx = hx_creature(s->allele);
     int pub[5] = {idx, s->allele[0][0] * 2 + s->allele[1][0], s->allele[0][1] * 2 + s->allele[1][1],
@@ -559,7 +630,17 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
     sp_jim_put(interp, result, "creature", Jim_NewStringObj(interp, CREATURES[idx].name, -1));
     sp_jim_put(interp, result, "genotypes", g);
     sp_jim_put(interp, result, "changed", Jim_NewIntObj(interp, changed));
-    sp_jim_put(interp, result, "draws", gm_canvas_result(interp, &canvas));
+    Jim_Obj* draws = gm_canvas_result(interp, &canvas);
+    if (nStrands > 0) {
+        Jim_ListAppendElement(interp, draws, Jim_NewStringObj(interp, "hx-strand", -1));
+        Jim_ListAppendElement(interp, draws, Jim_NewStringObj(interp, strands.s, (int)strands.n));
+    }
+    if (nSprites > 0) {
+        Jim_ListAppendElement(interp, draws, Jim_NewStringObj(interp, "hx-sprite", -1));
+        Jim_ListAppendElement(interp, draws, Jim_NewStringObj(interp, sprites.s, (int)sprites.n));
+    }
+    gm_buf_free(&strands); gm_buf_free(&sprites);
+    sp_jim_put(interp, result, "draws", draws);
     sp_jim_put(interp, result, "labels", Jim_NewStringObj(interp, labels.s, labels.n));
     sp_jim_put(interp, result, "labelsChanged", Jim_NewIntObj(interp, labelsChanged));
     sp_jim_put(interp, result, "notes", gm_notes_result(interp, &notes));
@@ -571,6 +652,115 @@ $helixLib reset
 
 Claim the dna helix library is $helixLib
 
+# The backbones: one quad per copy, the two strands drawn as smooth
+# curves by the fragment shader (the same shape as hx_strand_off in C).
+# place {cx cy ux uy}: centre and half length (display px); aspect: the
+# half height along perp(u). shape {turns a0 radius thickness} (radius
+# and thickness as fractions of the half height), unzip {at open width
+# gap} (at and width as fractions of the half length), color rgba.
+Wish the GPU compiles pipeline "hx-strand" {
+    {vec2 viewport mat3 surfaceToClip vec4 place float aspect vec4 shape vec4 unzip vec4 color} {
+        vec2 u = place.zw;
+        vec2 v = vec2(-u.y, u.x) * aspect;
+        vec2 c = place.xy;
+        vec2 vertices[6] = vec2[6](c - u - v, c + u - v, c + u + v, c - u - v, c + u + v, c - u + v);
+        vec3 p = surfaceToClip * vec3(vertices[gl_VertexIndex], 1.0);
+        return vec4(p.xy / p.z, 0.0, 1.0);
+    } {
+        vec2 clipXy = (gl_FragCoord.xy / viewport) * 2.0 - 1.0;
+        vec3 s = inverse(surfaceToClip) * vec3(clipXy, 1.0);
+        vec2 d = s.xy / s.z - place.xy;
+        vec2 u = place.zw;
+        vec2 v = vec2(-u.y, u.x) * aspect;
+        vec2 l = vec2(dot(d, u) / dot(u, u), dot(d, v) / dot(v, v));
+        if (abs(l.x) > 1.0 || abs(l.y) > 1.0) { return vec4(0.0); }
+        // One pixel in l.y, for smooth edges.
+        float px = 1.0 / length(v);
+        float dz = (l.x - unzip.x) / unzip.z;
+        float w = unzip.y * exp(-dz * dz);
+        float a = shape.y + 3.14159265 * shape.x * (l.x + 1.0);
+        // dy/dx in l units: how steep the curve is, to measure across it.
+        float k = 3.14159265 * shape.x * shape.z * (1.0 - w) * length(v) / length(u);
+        float best = 0.0;
+        float bright = 0.0;
+        for (int i = 0; i < 2; i++) {
+            float ai = a + float(i) * 2.26;
+            float off = shape.z * (1.0 - w) * sin(ai) + (i == 0 ? -1.0 : 1.0) * unzip.w * w;
+            float dist = abs(l.y - off) / sqrt(1.0 + k * k * cos(ai) * cos(ai));
+            float depth = w + (1.0 - w) * (0.5 + 0.5 * cos(ai));
+            float th = shape.w * (0.75 + 0.35 * depth);
+            float core = 1.0 - smoothstep(th - px, th + px, dist);
+            float glow = exp(-(dist / (th * 2.5)) * (dist / (th * 2.5))) * 0.18;
+            float cov = max(core, glow);
+            // The nearer strand passes over the further one.
+            if (cov * (0.5 + depth) > best * (0.5 + bright)) { best = cov; bright = depth; }
+        }
+        // Fade out over the last bit of each end.
+        best *= smoothstep(1.0, 0.96, abs(l.x));
+        if (best < 0.003) { return vec4(0.0); }
+        vec3 rgb = color.rgb * (0.3 + 0.7 * bright) + vec3(0.25) * bright * bright;
+        // Premultiplied: the GPU blends ONE, ONE_MINUS_SRC_ALPHA.
+        float alpha = best * color.a;
+        return vec4(min(rgb, vec3(1.0)) * alpha, alpha);
+    }
+}
+
+# The creatures' paintings: the arena's ca-sprite, as hx-sprite (the same
+# shader, but premultiplied as the GPU blends; both apps can run at once). fx {flash night alpha split}.
+Wish the GPU compiles pipeline "hx-sprite" {
+    {vec2 viewport mat3 surfaceToClip sampler2D tex float aspect vec4 place vec4 uv vec4 fx} {
+        vec2 u = place.zw;
+        vec2 v = vec2(-u.y, u.x) * aspect;
+        vec2 c = place.xy;
+        vec2 vertices[6] = vec2[6](c - u - v, c + u - v, c + u + v, c - u - v, c + u + v, c - u + v);
+        vec3 p = surfaceToClip * vec3(vertices[gl_VertexIndex], 1.0);
+        return vec4(p.xy / p.z, 0.0, 1.0);
+    } {
+        vec2 clipXy = (gl_FragCoord.xy / viewport) * 2.0 - 1.0;
+        vec3 s = inverse(surfaceToClip) * vec3(clipXy, 1.0);
+        vec2 d = s.xy / s.z - place.xy;
+        vec2 u = place.zw;
+        vec2 v = vec2(-u.y, u.x) * aspect;
+        vec2 l = vec2(dot(d, u) / dot(u, u), dot(d, v) / dot(v, v));
+        if (abs(l.x) > 1.0 || abs(l.y) > 1.0) { return vec4(0.0); }
+        vec2 t = mix(uv.xy, uv.zw, l * 0.5 + 0.5);
+        vec4 c;
+        if (fx.w > 0.5) {
+            c = vec4(texture(tex, vec2(t.x, t.y * 0.5)).rgb, texture(tex, vec2(t.x, 0.5 + t.y * 0.5)).r);
+        } else {
+            c = texture(tex, t);
+        }
+        if (c.a < 0.004) { return vec4(0.0); }
+        vec3 lin = c.rgb;
+        c.rgb = mix(lin * 12.92, 1.055 * pow(lin, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, lin));
+        vec3 rgb = mix(c.rgb, vec3(0.043, 0.078, 0.251), fx.y);
+        rgb = mix(rgb, vec3(1.0), fx.x);
+        // Premultiplied: the GPU blends ONE, ONE_MINUS_SRC_ALPHA.
+        float alpha = c.a * fx.z;
+        return vec4(rgb * alpha, alpha);
+    }
+}
+
+# The stills page of the arena's atlas (art/atlas-0.png: all 16 creatures
+# standing), decoded when DNA Helix is first shown and then kept on the
+# GPU. Until it's there the creature is drawn as light.
+When dnahelix is wanted & the image loader is /loadImage/ {
+    fn loadImage
+    set path $artDir/atlas-0.png
+    if {![file exists $path]} { return }
+    if {[catch {set im [loadImage $path]} err]} {
+        puts stderr "dnahelix: can't load $path: $err"
+        return
+    }
+    Claim the dna helix picture is $im
+}
+When dnahelix is wanted & the dna helix picture is /im/ {
+    Hold! -on $helixThis -key {helix picture} Wish the GPU loads image $im as texture
+}
+When dnahelix is wanted & the dna helix picture is /im/ & the GPU has loaded image /im/ as texture /tex/ {
+    Hold! -on $helixThis -key {helix texture} Claim the dna helix texture is $tex
+}
+
 # The table menu: DNA Helix.
 Claim table menu item dnahelix with label {DNA Helix} color {0.29 0.87 0.50 1} order 72 \
     toggles {dnahelix is shown}
@@ -581,6 +771,7 @@ When the collected results for [list /someone/ wishes dnahelix is shown] are /wi
     } else {
         Hold! -on $helixThis -key {helix wanted} {}
         Hold! -on $helixThis -key {helix state} {}
+        Hold! -on $helixThis -key {helix texture} {}
         $helixLib reset
     }
 }
@@ -606,7 +797,9 @@ When dnahelix is wanted &\
             set surfaceToClip [dict get [lindex $projections 0] s2c]
         }
 
-        set result [$helixLib step $t $map $poses $viewport $surfaceToClip]
+        set textures [lindex [Query! the dna helix texture is /tex/] 0]
+        set textures [expr {$textures eq "" ? "" : [list [dict get $textures tex]]}]
+        set result [$helixLib step $t $map $poses $viewport $surfaceToClip $textures]
 
         if {$canvas ne ""} {
             dict for {pipeline instances} [dict get $result draws] {

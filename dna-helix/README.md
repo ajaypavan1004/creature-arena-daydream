@@ -2,11 +2,17 @@
 
 A Daydream table app. Your two copies of a stretch of DNA float across the table as two
 turning double helixes of light. The four letters that decide a Genome Wrapped creature
-are lit up on them, and the creature they make stands beside them. Change a letter and the
-creature changes.
+are lit up on them, and the creature they make (its painting, from the arena's art) stands
+beside them. Change a letter and the creature changes.
 
 ![At the start](preview/start.png)
 ![After swapping letters](preview/swapped.png)
+![Unzipping a copy](preview/unzipped.png)
+
+The backbones are smooth curves drawn by a shader (`hx-strand`), with a major and a minor
+groove like real DNA, and the strand going behind is dimmer than the one in front. The
+painting is drawn by `hx-sprite` from `../art/atlas-0.png` (the arena's stills). Until that
+texture is on the GPU, or if `art/` is missing, the creature is drawn as light instead.
 
 ## How to use it
 
@@ -49,11 +55,20 @@ With Adrian's SDK (daydream-sdk), on Folk built from it:
 - `dream test`: passes. The test checks that it starts as Moonwhisker, that a fingertip on
   copy 2's CYP1A2 rung swaps A for C and turns the creature into Shadepounce, and that a
   pinch pulled away unzips a helix and lets it zip back.
-- `dream budget`: within the table's budgets, but only just on CPU (about 1.9 to 2.0 ms a
-  frame against 2 ms). GPU about 1.6 ms of 2 ms.
-- `dream studio`: the previews above are from the emulated table.
+- `dream budget`: within the table's budgets: CPU 1.9 ms a frame (95th percentile) of 2 ms,
+  GPU about 1.4 ms of 2 ms (an estimate).
+- The previews above are made off the table, because the studio doesn't draw custom
+  shaders: `tools/preview.folk` records what the app wishes drawn, and
+  `tools/render-preview.py` draws it with the same maths as the shaders.
 
 Not yet tried on the real table.
+
+To remake the previews (from the daydream-sdk checkout, with a built folk):
+
+```
+APP_DIR=path/to/dna-helix OUT=/tmp/hx-preview ./folk path/to/dna-helix/tools/preview.folk
+python3 path/to/dna-helix/tools/render-preview.py /tmp/hx-preview path/to/dna-helix/preview
+```
 
 ## Running it
 

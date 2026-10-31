@@ -1,0 +1,64 @@
+# preview.folk -- pictures of DNA Helix, off the table: runs it on the
+# made-up rig with a stand-in for the stills texture, and writes what it
+# wished drawn at a few moments to OUT/NAME/PIPELINE.txt.
+# tools/render-preview.py turns them into PNGs, as the GPU would.
+#
+#     APP_DIR=path/to/dna-helix OUT=/tmp/hx-preview ./folk path/to/dna-helix/tools/preview.folk
+#     python3 path/to/dna-helix/tools/render-preview.py /tmp/hx-preview path/to/dna-helix/preview
+#
+# (Run from a daydream (folk) checkout with a built folk, as `dream test`.)
+
+source kits/testing/lib-test.tcl
+source kits/games/test/lib-games-test.tcl
+
+set appDir [expr {[info exists ::env(APP_DIR)] ? $::env(APP_DIR) : "."}]
+set ::out [expr {[info exists ::env(OUT)] ? $::env(OUT) : "/tmp/hx-preview"}]
+loadSpatialPrograms
+loadProgram kits/spatial/hands.folk
+loadProgram kits/games/games.folk
+loadProgram $appDir/dnahelix.folk
+assertRig
+mockFrameClock
+Assert! when {Wish dnahelix is shown} with environment [list [list this preview]]
+# Texture 1 stands for art/atlas-0.png (as render-preview.py numbers it).
+Assert! when {Claim the dna helix texture is 1} with environment [list [list this preview-texture]]
+
+set camera $::rigCamera
+set display $::rigDisplay
+set lib [dict get [waitFor {the spatial library is /lib/} 60] lib]
+set map [dict get [waitFor [list the table map from camera $camera to display $display is /map/] 20] map]
+set helix [dict get [waitFor {the dna helix library is /lib/} 30] lib]
+mockCanvas $display
+warmUpHands $lib $map $camera
+
+proc dump {name} {
+    file mkdir $::out/$name
+    foreach pipeline {hx-sprite fillTriangle games-beam hx-strand games-dot} {
+        set fd [open $::out/$name/$pipeline.txt w]
+        foreach i [drawnInstances $pipeline] { puts $fd $i }
+        close $fd
+    }
+    set fd [open $::out/$name/labels.txt w]
+    foreach r [Query! the dna helix labels on /d/ are /labels/] { foreach l [dict get $r labels] { puts $fd [string map [list \n {\n}] $l] } }
+    close $fd
+    puts "preview: $name"
+}
+
+waitFor {the dna helix shows Moonwhisker with genotypes {AA GG GC TT}} 10
+sleep 1.5
+dump start
+
+# Copy 2's CYP1A2 and HCRTR2 letters swapped: Ember, Dawn.
+$helix setAlleles 2 {1 1 0 1}
+sleep 0.15
+dump swapped
+
+# A pinch on copy 1, pulled towards the front: it unzips there.
+set open [dict create id 32 mode open at [wristFor pinch pinch {0.52 0.32}]]
+set pull [dict create id 32 mode pinch at [wristFor pinch pinch {0.52 0.32}] step {0 0.004}]
+feedHands $lib $map $camera [list $open] 8
+feedHands $lib $map $camera [list $pull] 25
+dump unzipped
+removeHand 32
+puts "preview: done"
+finish
