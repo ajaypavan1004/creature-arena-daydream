@@ -197,8 +197,10 @@ check {[dict get $n atlas] >= 6 && [dict get $n floor] >= 1} "with the textures:
 check {[llength [Query! /someone/ wishes the GPU draws pipeline ca-sprite onto canvas /c/ with instances /i/ layer /l/]] == 1} \
     "the pictures are one draw"
 
-# 8. Alone: player 1 is ready, nobody's hands come from player 2's end:
-# the computer plays it, and fights.
+# 8. Alone, with the computer on (off by default): player 1 is ready,
+# nobody's hands come from player 2's end: the computer plays it, and
+# fights.
+$arena setComputer 3
 $arena reset 7
 check {[waitFor {the creature arena is pick with creatures /c/ winner 0} 3] ne ""} "back on the pick screen"
 feedHands $lib $map $camera [list [handFrom 1 28 open palm {0.23 0.573}]] 90

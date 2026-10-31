@@ -15,9 +15,10 @@
 #     at the other creature when it is close), a fist sprints (how long
 #     depends on your muscle type). With one hand, it does both. First
 #     creature to empty the other's health wins.
-#   - Alone: once you're ready, an end that has had no hands for
-#     botAfter s is played by the computer (the browser game's bot.ts);
-#     a hand from that end on the pick screen takes it back.
+#   - Alone (off by default; botAfter > 0 turns it on): once you're
+#     ready, an end that has had no hands for botAfter s is played by
+#     the computer (the browser game's bot.ts); a hand from that end on
+#     the pick screen takes it back.
 #   - Genes decide the power ups, as in the browser game: coffee boosts
 #     a Blaze and gives an Ember the jitters; bitter greens heal a Bold
 #     creature and send a Keen one reeling; an energy orb charges a
@@ -81,7 +82,7 @@ set ARENA_SETTINGS {
     countdown 2.4 koPause 1.3 winnerTime 5
     followDeadzone 15 followFull 90
     twoHands 1 moveKeep 0.08
-    botAfter 3 botReaction {0.16 0.42} botAttackRange 138 botBackOffChance 0.45
+    botAfter 0 botReaction {0.16 0.42} botAttackRange 138 botBackOffChance 0.45
     botBackOffTime {0.35 0.8} botSpeed 0.92 botSeekRange 650 botGrabRange 170 botAvoidMargin 25
     switchReach 0.04 dwellFlip 0.6 readyHold 1.0 readyReach 0.07
     textHeight 0.022
@@ -264,6 +265,18 @@ $cc code {
         for (int p = 1; p <= 2; p++) {
             if (picked) { memcpy(g->side[p].genes, keep[p].genes, sizeof(keep[p].genes)); }
             else { for (int i = 0; i < 5; i++) { g->side[p].genes[i] = (int)(gm_random(&g->rnd) * GENE_OPTIONS[i]) % GENE_OPTIONS[i]; } }
+        }
+        if (!picked) {
+            /* The first picks: two different creatures with walk cycles. */
+            int walkers[16], n = 0;
+            for (int i = 0; i < 16; i++) { if (CA_WALK_FRAMES[i] > 0) { walkers[n++] = i; } }
+            if (n >= 2) {
+                int a = (int)(gm_random(&g->rnd) * n) % n, b = (a + 1 + (int)(gm_random(&g->rnd) * (n - 1)) % (n - 1)) % n;
+                int pick[3] = {0, walkers[a], walkers[b]};
+                for (int p = 1; p <= 2; p++) {
+                    for (int i = 0; i < 4; i++) { g->side[p].genes[i] = (pick[p] >> (3 - i)) & 1; }
+                }
+            }
         }
         picked = 1;
         g->phase = PH_PICK;
@@ -888,6 +901,13 @@ $cc proc reset {int seed} void {
     pthread_mutex_unlock(&lock);
 }
 
+# The computer takes an empty end after AFTER s (0: never, the default).
+$cc proc setComputer {double after} void {
+    pthread_mutex_lock(&lock);
+    config.botAfter = after;
+    pthread_mutex_unlock(&lock);
+}
+
 # Sets player P's genes {flame time senses spark muscle} (tests, demos).
 $cc proc setGenes {int p Jim_Obj* genes} void {
     double v[5];
@@ -1037,7 +1057,7 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
             }
             for (int p = 1; p <= 2; p++) {
                 CaSide* sd = &g->side[p];
-                if (!g->bot[p] && !g->bot[3 - p] && g->side[3 - p].ready && g->alone[p] >= c->botAfter) {
+                if (c->botAfter > 0 && !g->bot[p] && !g->bot[3 - p] && g->side[3 - p].ready && g->alone[p] >= c->botAfter) {
                     g->bot[p] = 1;
                     for (int i = 0; i < 5; i++) { sd->genes[i] = (int)(gm_random(&g->rnd) * GENE_OPTIONS[i]) % GENE_OPTIONS[i]; }
                     gm_note(&notes, 55, 60, 0.3);
@@ -1232,12 +1252,18 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                 if (art) {
                     /* The painting, breathing a little, facing the middle of the table. */
                     double breathe = 1 + 0.02 * sin(now * 2.4 + p);
-                    const CaCell* k = &CA_CELLS[CA_STILL[idx]];
+                    /* A creature with a walk cycle walks on the spot. */
+                    int cell = CA_STILL[idx], facesLeft = CA_FACES_LEFT[idx];
+                    if (CA_WALK_FRAMES[idx] > 0) {
+                        cell = CA_WALK_FIRST[idx] + (int)(now * CA_WALK_FPS[idx] * 0.7) % CA_WALK_FRAMES[idx];
+                        facesLeft = 0; breathe = 1;
+                    }
+                    const CaCell* k = &CA_CELLS[cell];
                     double ph = fmin(H * 1.15, ca_switch_spacing(&L) * 2.0 / fmax(1, k->w / k->h));
                     /* Each faces the middle of the table. */
                     int towardsRight = sp_dot2(sp_sub2(L.centre, pv), ca_pic_right(&L, p)) >= 0;
-                    ca_cell(&canvas, &sprites, CA_STILL[idx], pv, ca_pic_up(&L, p), ph * breathe, 0,
-                            towardsRight == CA_FACES_LEFT[idx], 0, 0, 1);
+                    ca_cell(&canvas, &sprites, cell, pv, ca_pic_up(&L, p), ph * breathe, 0,
+                            towardsRight == facesLeft, 0, 0, 1);
                 } else {
                     ca_draw_creature(&canvas, idx, pv, L.in[p], s, now, 1.0f, dusk);
                 }
@@ -1337,7 +1363,7 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                     SpVec2 centre = sp_add2(feet, sp_scale2(ca_rot(up, lean), h * squash * 0.5 + hop));
                     float flash = f->flash > 0 ? (float)fmin(1, f->flash / c->hitFlash) * 0.85f : 0;
                     ca_sprite(&canvas, &sprites, sprites.atlas[k->page], centre, up, h * k->w / k->h * 0.5 / squash, h * squash * 0.5, lean,
-                              k->u0, k->v0, k->u1, k->v1, (side >= 0) == facesLeft, flash, 0.32f * night, f->hp <= 0 ? 0.75f : 1.0f);
+                              k->u0, k->v0, k->u1, k->v1, (side >= 0) == facesLeft, flash, 0, f->hp <= 0 ? 0.75f : 1.0f);
                     mid = sp_add2(feet, sp_scale2(up, h * 0.45 + hop));
                     /* Whose it is: a short bar of its player's colour at its feet. */
                     gm_beam(&canvas, sp_add2(feet, sp_scale2(right, -s * 0.7)), sp_add2(feet, sp_scale2(right, s * 0.7)),
@@ -1454,7 +1480,11 @@ Wish the GPU compiles pipeline "ca-sprite" {
             c = texture(tex, t);
         }
         if (c.a < 0.004) { return vec4(0.0); }
-        vec3 rgb = mix(c.rgb, vec3(0.0033, 0.0070, 0.0513), fx.y);
+        // The texture is sRGB (sampled as linear) but the display is UNORM:
+        // back to sRGB, or the pictures come out dark and faint.
+        vec3 lin = c.rgb;
+        c.rgb = mix(lin * 12.92, 1.055 * pow(lin, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, lin));
+        vec3 rgb = mix(c.rgb, vec3(0.043, 0.078, 0.251), fx.y);
         rgb = mix(rgb, vec3(1.0), fx.x);
         return vec4(rgb, c.a * fx.z);
     }
