@@ -1,0 +1,3 @@
+# The table fetches an app commit as an archive (kits/guest-cards):
+# the browser game is not part of the table apps and is 120 MB.
+browser-game/ export-ignore

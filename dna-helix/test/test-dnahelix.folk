@@ -39,7 +39,21 @@ proc st {helix key} { dict get [$helix state] $key }
 check {[waitFor {the dna helix shows Moonwhisker with genotypes {AA GG GC TT}} 10] ne ""} \
     "it starts as Moonwhisker: [Query! the dna helix shows /c/ with genotypes /g/]"
 sleep 0.2
-check {[drawnCount games-beam 100] >= 100} "it draws both helixes"
+# Both helixes, rungs and all, are two hx-strand draws (the rungs'
+# letters in the last argument, 2 bits a base).
+proc strandInstances {} {
+    for {set i 0} {$i < 50} {incr i} {
+        set s [drawnInstances hx-strand]
+        if {[llength $s] >= 2} { return $s }
+        sleep 0.01
+    }
+    return {}
+}
+set strands [strandInstances]
+check {[llength $strands] == 2 && [lindex $strands 0 2] >= 12 && [lindex $strands 0 7 0] > 0} \
+    "it draws both helixes with their rungs in two draws: [lrange [lindex $strands 0] 0 2] [lindex $strands 0 7]"
+check {[llength [drawnInstances games-beam]] < 30} "and no rung beams (only the creature, drawn as light here): [llength [drawnInstances games-beam]]"
+if {[info exists ::env(HX_DUMP)]} { set f [open $::env(HX_DUMP) w]; puts $f $strands; close $f }
 check {[waitFor [list the dna helix labels on $display are /l/] 5] ne ""} "it labels them"
 
 # 1. A fingertip on copy 2's CYP1A2 rung: A becomes C, one C makes an Ember.

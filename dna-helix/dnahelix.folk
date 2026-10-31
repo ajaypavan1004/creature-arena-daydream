@@ -525,6 +525,9 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
         double phase = now * c->spin * 2 * M_PI;
         double xLast = hx_base_x(&L, L.nBases - 1), xc = (L.x0 + xLast) / 2, halfLen = (xLast - L.x0) / 2 + c->spacing * 0.5;
         double H = c->radius + HX_GAP + 0.012;      /* the strand quad's half height */
+        /* The rungs in hx-strand (one draw a copy), up to 48 bases (4
+         * floats of letters); more, or off the canvas: beams, as before. */
+        int shaderRungs = canvas.on && L.nBases <= 48;
         for (int cp = 0; cp < 2; cp++) {
             double y0 = hx_copy_y(cp);
             /* The two backbones: one smooth curved quad each copy, drawn by
@@ -536,11 +539,22 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                     double ux = pr.x - pc.x, uy = pr.y - pc.y, vx = pt.x - pc.x, vy = pt.y - pc.y, uu = ux * ux + uy * uy;
                     double aspect = (-uy * vx + ux * vy) / uu;
                     double turns = 2 * halfLen / (c->spacing * c->turn);
-                    double a0 = hx_angle(&L, xc - halfLen, phase);
-                    gm_buf_printf(&strands, "%s{%s {%.1f %.1f %.2f %.2f} %.5f {%.5f %.5f %.5f %.5f} {%.5f %.5f %.5f %.5f} {0.78 0.88 1.0 0.95}}",
-                                  nStrands ? " " : "", canvas.head, pc.x, pc.y, ux, uy, aspect,
+                    /* Kept small: the frame clock is epoch seconds, and a float can't
+                     * hold sin's argument at 1e9 rad (the helix would jump). */
+                    double a0 = fmod(hx_angle(&L, xc - halfLen, phase), 2 * M_PI);
+                    /* The letters, 2 bits each, 12 to a float (exact in a float). */
+                    double seq[4] = {0, 0, 0, 0};
+                    for (int i = 0; shaderRungs && i < L.nBases; i++) {
+                        char b = hx_base(s, &L, cp, i);
+                        int code = b == 'A' ? 0 : b == 'C' ? 1 : b == 'G' ? 2 : 3;
+                        seq[i / 12] += code * (double)(1 << ((i % 12) * 2));
+                    }
+                    gm_buf_printf(&strands, "%s{{%s} %.5f %d %s {%.1f %.1f %.2f %.2f} {%.5f %.5f %.5f %.5f} {%.5f %.5f %.5f %.5f} {%.0f %.0f %.0f %.0f}}",
+                                  nStrands ? " " : "", Jim_String(viewport), aspect, shaderRungs ? L.nBases : 0, canvas.s2c,
+                                  pc.x, pc.y, ux, uy,
                                   turns, a0, c->radius / H, 0.0032 / H,
-                                  (s->openAt[cp] - xc) / halfLen, s->open[cp], c->unzipWidth / halfLen, HX_GAP / H);
+                                  (s->openAt[cp] - xc) / halfLen, s->open[cp], c->unzipWidth / halfLen, HX_GAP / H,
+                                  seq[0], seq[1], seq[2], seq[3]);
                     nStrands++;
                 }
             }
@@ -558,7 +572,7 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                 int site = -1;
                 for (int k = 0; k < 4; k++) { if (L.site[k] == i) { site = k; } }
                 double width = site >= 0 ? 0.007 : 0.0035, glow = site >= 0 ? 0.002 : 0;
-                if (half > 0.002) {
+                if (half > 0.002 && !shaderRungs) {
                     gm_beam(&canvas, bb[0], sp_sub2(mid, sp_scale2(dir, cut)), width, glow, 1.0, ca_hex(hx_base_color(b0), rd));
                     gm_beam(&canvas, bb[1], sp_add2(mid, sp_scale2(dir, cut)), width, glow, 1.0, ca_hex(hx_base_color(b1), rd));
                 }
@@ -580,7 +594,8 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
         for (int k = 0; k < 4; k++) {
             double x = hx_base_x(&L, L.site[k]);
             int side = k == 0 ? genes[0] : k == 1 ? genes[1] : k == 2 ? genes[2] : genes[3];
-            snprintf(buf, sizeof(buf), "%s %s\n%s\n%c / %c  %s", SITES[k].gene, SITES[k].rs, SITES[k].about,
+            /* (The rs numbers are in the README: fewer glyphs, each a draw.) */
+            snprintf(buf, sizeof(buf), "%s\n%s\n%c / %c  %s", SITES[k].gene, SITES[k].about,
                      SITES[k].letter[s->allele[0][k]], SITES[k].letter[s->allele[1][k]], SIDES[k][side]);
             hx_label(&labels, &L, &M, hx_at(&L, x, hx_copy_y(1) + c->radius + 0.06), buf, c->textHeight * 0.8, gm_rgba(1, 1, 1, 0.9f));
         }
@@ -652,14 +667,20 @@ $helixLib reset
 
 Claim the dna helix library is $helixLib
 
-# The backbones: one quad per copy, the two strands drawn as smooth
-# curves by the fragment shader (the same shape as hx_strand_off in C).
-# place {cx cy ux uy}: centre and half length (display px); aspect: the
-# half height along perp(u). shape {turns a0 radius thickness} (radius
-# and thickness as fractions of the half height), unzip {at open width
-# gap} (at and width as fractions of the half length), color rgba.
+# The backbones and the rungs: one quad per copy, the two strands drawn
+# as smooth curves by the fragment shader (the same shape as
+# hx_strand_off in C), and the rungs between them, each base pair's two
+# halves in their letters' colours (one draw a copy, not two beams a
+# rung: ~100 fewer draws a frame). place {cx cy ux uy}: centre and half
+# length (display px); aspect: the half height along perp(u); nBases:
+# the rungs (0: none, the C side draws them). shape {turns a0 radius
+# thickness} (radius and thickness as fractions of the half height),
+# unzip {at open width gap} (at and width as fractions of the half
+# length), seq: the letters, 2 bits each (A C G T), 12 to a float. The
+# arguments fill the 128 bytes of push constants exactly (the colour is
+# in the shader).
 Wish the GPU compiles pipeline "hx-strand" {
-    {vec2 viewport mat3 surfaceToClip vec4 place float aspect vec4 shape vec4 unzip vec4 color} {
+    {vec2 viewport float aspect float nBases mat3 surfaceToClip vec4 place vec4 shape vec4 unzip vec4 seq} {
         vec2 u = place.zw;
         vec2 v = vec2(-u.y, u.x) * aspect;
         vec2 c = place.xy;
@@ -697,11 +718,56 @@ Wish the GPU compiles pipeline "hx-strand" {
         }
         // Fade out over the last bit of each end.
         best *= smoothstep(1.0, 0.96, abs(l.x));
-        if (best < 0.003) { return vec4(0.0); }
+        vec4 color = vec4(0.78, 0.88, 1.0, 0.95);
         vec3 rgb = color.rgb * (0.3 + 0.7 * bright) + vec3(0.25) * bright * bright;
         // Premultiplied: the GPU blends ONE, ONE_MINUS_SRC_ALPHA.
         float alpha = best * color.a;
-        return vec4(min(rgb, vec3(1.0)) * alpha, alpha);
+        vec4 strand = vec4(min(rgb, vec3(1.0)) * alpha, alpha);
+
+        // The rung of the base under this pixel, under the strands.
+        vec4 rung = vec4(0.0);
+        if (nBases > 0.5) {
+            float cell = 2.0 / nBases;
+            float bi = clamp(floor((l.x + 1.0) / cell), 0.0, nBases - 1.0);
+            float lc = -1.0 + (bi + 0.5) * cell;
+            float dc = (lc - unzip.x) / unzip.z;
+            float wc = unzip.y * exp(-dc * dc);
+            float ac = shape.y + 3.14159265 * shape.x * (lc + 1.0);
+            float o0 = shape.z * (1.0 - wc) * sin(ac) - unzip.w * wc;
+            float o1 = shape.z * (1.0 - wc) * sin(ac + 2.26) + unzip.w * wc;
+            float span = o1 - o0;
+            if (abs(span) > 0.002) {
+                float t = (l.y - o0) / span;
+                float mid = 0.5 * (o0 + o1);
+                float cut = min(abs(span) * 0.5, wc * unzip.w * 0.8);
+                int b = int(bi);
+                int word = b / 12;
+                float wv = word == 0 ? seq.x : word == 1 ? seq.y : word == 2 ? seq.z : seq.w;
+                int code = (int(wv + 0.5) >> ((b - word * 12) * 2)) & 3;
+                bool site = false;
+                for (int k = 0; k < 4; k++) {
+                    if (abs(floor((0.14 + float(k) * 0.24) * (nBases - 1.0) + 0.5) - bi) < 0.5) { site = true; }
+                }
+                // Its half from strand 0 is its letter, the other half the pair's (A-T, C-G).
+                int letter = t < 0.5 ? code : 3 - code;
+                vec3 col = letter == 0 ? vec3(0.290, 0.871, 0.502) : letter == 1 ? vec3(0.376, 0.647, 0.980)
+                         : letter == 2 ? vec3(0.980, 0.800, 0.082) : vec3(0.973, 0.443, 0.443);
+                float pxU = length(u), pxV = length(v);
+                float halfW = shape.w * (site ? 1.1 : 0.55) * pxV;
+                float across = abs(l.x - lc) * pxU;
+                float cov = 1.0 - smoothstep(halfW - 1.0, halfW + 1.0, across);
+                if (site) { cov = max(cov, exp(-(across / (halfW * 2.0)) * (across / (halfW * 2.0))) * 0.25); }
+                cov *= step(0.0, t) * step(t, 1.0);
+                cov *= smoothstep(cut, cut + px, abs(l.y - mid));
+                float d0 = wc + (1.0 - wc) * (0.5 + 0.5 * cos(ac));
+                float d1 = wc + (1.0 - wc) * (0.5 + 0.5 * cos(ac + 2.26));
+                float ra = cov * (0.35 + 0.65 * 0.5 * (d0 + d1));
+                rung = vec4(col * ra, ra);
+            }
+        }
+        vec4 outc = strand + rung * (1.0 - strand.a);
+        if (outc.a < 0.003) { return vec4(0.0); }
+        return outc;
     }
 }
 
