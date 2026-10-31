@@ -10,11 +10,17 @@
 #     fingertip on it, to flip it; your creature appears beside them.
 #     Hold your open palm on the ring marked Ready. When both players
 #     are ready the fight counts down.
-#   - Fight: your creature runs towards your hand (the one of yours
-#     nearest it steers). Your other hand acts: a pinch is a bite (aimed
-#     at the other creature when it is close), a fist sprints (how long
-#     depends on your muscle type). With one hand, it does both. First
-#     creature to empty the other's health wins.
+#   - Fight: each player has a ring at the bottom long edge, on their
+#     side. Your hand on your ring is a joystick: push it the way your
+#     creature should run, further for faster. Your other hand acts,
+#     anywhere on your side: a pinch is a bite (aimed at the other
+#     creature when it is close), a fist sprints (how long depends on
+#     your muscle type). Rings of your colour show which hand does
+#     what. With one hand, the ring's hand does both. Which hand is
+#     whose is the controls kit's (kits/controls/controls.h): by where
+#     each arm comes from, not by the tracker's ids. `steer follow`
+#     brings back the old way: your creature runs towards your hand.
+#     First creature to empty the other's health wins.
 #   - Alone (off by default; botAfter > 0 turns it on): once you're
 #     ready, an end that has had no hands for botAfter s is played by
 #     the computer (the browser game's bot.ts); a hand from that end on
@@ -81,7 +87,9 @@ set ARENA_SETTINGS {
     firstSwitchMin 10 firstSwitchMax 16
     countdown 2.4 koPause 1.3 winnerTime 5
     followDeadzone 15 followFull 90
-    twoHands 1 moveKeep 0.08
+    steer ring twoHands 1 moveKeep 0.08
+    ringRadius 0.085 ringInset 0.10 ringGap 0.03 ringDeadZone 0.3
+    ringReach 0.15 ringKeep 0.30 ownerReach 0.38
     botAfter 0 botReaction {0.16 0.42} botAttackRange 138 botBackOffChance 0.45
     botBackOffTime {0.35 0.8} botSpeed 0.92 botSeekRange 650 botGrabRange 170 botAvoidMargin 25
     switchReach 0.04 dwellFlip 0.6 readyHold 1.0 readyReach 0.07
@@ -93,10 +101,11 @@ set ARENA_SETTINGS {
 set ARENA_LAYERS {ca-sprite 90.5 fillTriangle 91 games-beam 92 games-dot 94}
 set ARENA_TEXT_LAYER 96
 
+set controlsDir "[pwd]/kits/controls"
 set arenaThis $this
 
 set cc [C]
-$cc cflags -I$spatialDir -I$gamesDir -I$arenaDir/art
+$cc cflags -I$spatialDir -I$gamesDir -I$controlsDir -I$arenaDir/art
 $cc include <math.h>
 $cc include <string.h>
 $cc include <pthread.h>
@@ -104,6 +113,8 @@ $cc include "spatial.h"
 $cc include "spatial_jim.h"
 $cc include "physics.h"
 $cc include "games_jim.h"
+$cc include "controls.h"
+$cc include "controls_jim.h"
 $cc include "atlas.h"
 $cc code {
     /* ------------------------------------------------ the creatures */
@@ -163,7 +174,10 @@ $cc code {
         double countdown, koPause, winnerTime, followDeadzone, followFull;
         double switchReach, dwellFlip, readyHold, readyReach, textHeight;
         double spriteHeight, bobHeight, lean, lungeLean, hitFlash;   /* the pictures (render.ts, config.ts motion) */
-        double moveKeep;          /* m: the steering hand keeps its creature unless another is this much nearer */
+        double moveKeep;          /* m: (steer follow) the steering hand keeps its creature unless another is this much nearer */
+        /* steer ring: each player's ring at the bottom edge (controls.h) */
+        double ringRadius, ringInset, ringGap, ringDeadZone, ringReach, ringKeep, ownerReach;
+        int steerRing;
         /* The computer (the browser game's bot.ts, CONFIG.bot): it takes a side
          * nobody's hands have been on for botAfter s once the other is ready. */
         double botAfter, botReaction[2], botAttackRange, botBackOffChance, botBackOffTime[2];
@@ -211,7 +225,11 @@ $cc code {
         CaPickup pending; int hasPending;
         double spawnIn;
         struct { int id, pinch; double seen; } hand[CA_HANDMEM];
-        int moveId[3];            /* each player's steering hand (tracker id), -1 none */
+        int moveId[3];            /* (steer follow) each player's steering hand (tracker id), -1 none */
+        CtBinder bind;            /* (steer ring) whose hands are whose, which steers and which acts */
+        int stickOn[3], actOn[3], actFist[3];
+        SpVec2 knob[3], actAt[3]; /* the stick hand from its ring's middle; the acting hand (table m) */
+        double bitAt[3];          /* when the acting hand last bit */
         int bot[3];               /* the computer plays this side */
         double alone[3];          /* s on the pick screen with none of this side's hands */
         struct {
@@ -261,6 +279,7 @@ $cc code {
         CaSide keep[3];
         memcpy(keep, g->side, sizeof(keep));
         memset(g, 0, sizeof(*g));
+        ct_init(&g->bind);
         g->rnd.s = seed ? seed : 0xc0ffee;
         for (int p = 1; p <= 2; p++) {
             if (picked) { memcpy(g->side[p].genes, keep[p].genes, sizeof(keep[p].genes)); }
@@ -655,6 +674,31 @@ $cc code {
     static SpVec2 ca_ready_at(const CaLayout* L, int p) { return ca_at(L, p, 0.23, ca_switch_spacing(L) * 1.3); }
     static SpVec2 ca_preview_at(const CaLayout* L, int p) { return ca_at(L, p, 0.23, -ca_switch_spacing(L) * 1.1); }
 
+    /* Player p's ring (steer ring): at the bottom long edge, player 1 on
+     * the left, clear of the arena's circle but as near the middle as
+     * that allows (the middle is easiest to reach); `anchor`: where they
+     * stand, on the edge below it. */
+    static SpVec2 ca_ring_at(const CaLayout* L, const CaConfig* c, int p, SpVec2* anchor) {
+        double d = L->halfEdge - c->ringInset;
+        double chord = d < L->R ? sqrt(L->R * L->R - d * d) : 0;
+        double halfLong = sp_dist2(L->mid[1], L->mid[2]) / 2;
+        double across = fmax(0.1, fmin(halfLong - 0.33, chord + c->ringRadius + c->ringGap)) * (p == 1 ? -1 : 1);
+        SpVec2 side = sp_add2(L->centre, sp_scale2(L->rt, across));
+        if (anchor) { *anchor = sp_sub2(side, sp_scale2(L->up, L->halfEdge)); }
+        return sp_sub2(side, sp_scale2(L->up, d));
+    }
+    static CtConfig ca_controls(const CaConfig* c) {
+        CtConfig k = ct_default_config();
+        k.twoHands = c->twoHands;
+        k.oneHandBoth = 1;
+        k.ownerReach = c->ownerReach;
+        k.ringRadius = c->ringRadius;
+        k.ringReach = c->twoHands ? c->ringReach : c->ringKeep;
+        k.ringKeep = c->ringKeep;
+        k.deadZone = c->ringDeadZone;
+        return k;
+    }
+
     /* The player whose end the hand's arm comes from. */
     static int ca_owner(const CaLayout* L, const GmHand* h) {
         SpVec2 w = h->wrist;
@@ -868,9 +912,14 @@ $cc proc configure {Jim_Obj* settings} void {
     SET(countdown); SET(koPause); SET(winnerTime); SET(followDeadzone); SET(followFull);
     SET(switchReach); SET(dwellFlip); SET(readyHold); SET(readyReach); SET(textHeight);
     SET(spriteHeight); SET(bobHeight); SET(lean); SET(lungeLean); SET(hitFlash); SET(moveKeep);
+    SET(ringRadius); SET(ringInset); SET(ringGap); SET(ringDeadZone); SET(ringReach); SET(ringKeep); SET(ownerReach);
     #undef SET
     c.maxOnField = gm_jim_int(interp, settings, "maxOnField", 3);
     c.twoHands = gm_jim_int(interp, settings, "twoHands", 1);
+    Jim_Obj* steer = sp_jim_dict_get(interp, settings, "steer");
+    c.steerRing = !steer || strcmp(Jim_String(steer), "follow") != 0;
+    if (c.ringRadius <= 0.01) { c.ringRadius = 0.085; }
+    if (!(c.ringDeadZone >= 0 && c.ringDeadZone < 0.9)) { c.ringDeadZone = 0.3; }
     sp_jim_dict_double(interp, settings, "botAfter", 0, 0, &c.botAfter);
     sp_jim_dict_double(interp, settings, "botAttackRange", 0, 0, &c.botAttackRange);
     sp_jim_dict_double(interp, settings, "botBackOffChance", 0, 0, &c.botBackOffChance);
@@ -905,6 +954,14 @@ $cc proc reset {int seed} void {
 $cc proc setComputer {double after} void {
     pthread_mutex_lock(&lock);
     config.botAfter = after;
+    pthread_mutex_unlock(&lock);
+}
+
+# Steering: ring (the default: a hand on your ring is a joystick) or
+# follow (your creature runs towards your hand) (tests, demos).
+$cc proc setSteer {char* mode} void {
+    pthread_mutex_lock(&lock);
+    config.steerRing = strcmp(mode, "follow") != 0;
     pthread_mutex_unlock(&lock);
 }
 
@@ -1000,6 +1057,8 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
     int nf = sp_jim_vec2s(interp, sp_jim_dict_get(interp, map, "footprint"), fp, GM_POLY_MAX);
     GmHand hands[GM_MAX_HANDS];
     int nh = gm_read_hands(interp, poses, hands, GM_MAX_HANDS);
+    CtHand chands[CT_MAX_HANDS];
+    int nch = ct_read_hands(interp, poses, chands, CT_MAX_HANDS);
     GmCanvas canvas;
     gm_canvas_init(interp, &canvas, &M, viewport, surfaceToClip);
     CaSprites sprites;
@@ -1040,6 +1099,34 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
             if (slot >= 0) { was = g->hand[slot].pinch; } else { slot = free >= 0 ? free : 0; }
             pinchStart[i] = hands[i].pinching && !was;
             g->hand[slot].id = hands[i].id; g->hand[slot].pinch = hands[i].pinching; g->hand[slot].seen = now;
+        }
+
+        /* steer ring: the controls kit binds the hands to the players,
+         * every frame (its rings show in every phase). */
+        CtConfig cc = ca_controls(c);
+        SpVec2 ring[3];
+        if (c->steerRing) {
+            CtSeat seats[2];
+            for (int p = 1; p <= 2; p++) {
+                ring[p] = ca_ring_at(&L, c, p, &seats[p - 1].anchor);
+                seats[p - 1].ring = ring[p];
+                seats[p - 1].moveHand = CT_ANY_HAND;
+            }
+            ct_seat(&g->bind, &cc, seats, 2, fp, nf);
+            ct_bind(&g->bind, &cc, now, chands, nch);
+            for (int p = 1; p <= 2; p++) {
+                int mv = ct_hand(&g->bind, &cc, p - 1, CT_MOVE);
+                const CtSlot* act = ct_actor(&g->bind, &cc, p - 1);
+                int ah = act ? act->hand : -1;
+                g->stickOn[p] = mv >= 0;
+                if (mv >= 0) {
+                    const CtHand* hh = &chands[mv];
+                    g->knob[p] = sp_sub2(hh->hasPred && ct_finite2(hh->pred) ? hh->pred : hh->palm, ring[p]);
+                }
+                g->actOn[p] = ah >= 0 && ah != mv;
+                g->actFist[p] = ah >= 0 && chands[ah].fist;
+                if (g->actOn[p]) { g->actAt[p] = chands[ah].palm; }
+            }
         }
 
         /* ----- pick: switches and Ready ----- */
@@ -1129,7 +1216,33 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                     if (g->phase == PH_FIGHT) { ca_bot_think(g, p, h); }
                     continue;
                 }
-                /* The steering hand: the player's hand nearest the creature,
+                if (c->steerRing) {
+                    /* The ring's hand is a joystick: the way it pushes from
+                     * the ring's middle, past the dead zone, up to full
+                     * speed at the ring. The acting hand (the ring's hand,
+                     * for a player with one) bites and sprints. */
+                    double sx, sy;
+                    if (ct_stick(&g->bind, &cc, chands, p - 1, L.rt, L.up, &sx, &sy)) {
+                        f->hasHand = 1;
+                        double l = hypot(sx, sy), dz = cc.deadZone;
+                        if (l > dz) {
+                            double amount = fmin(1, (l - dz) / fmax(0.05, 1 - dz));
+                            SpVec2 d = sp_add2(sp_scale2(L.rt, sx), sp_scale2(L.up, sy));
+                            f->intent = sp_scale2(d, amount / l);
+                        }
+                    }
+                    const CtSlot* act = ct_actor(&g->bind, &cc, p - 1);
+                    if (act && act->hand >= 0) {
+                        f->sprintHeld = chands[act->hand].fist;
+                        for (int k = 0; k < nh; k++) {
+                            if (hands[k].id == chands[act->hand].id && pinchStart[k] && g->phase == PH_FIGHT) {
+                                f->attackPressed = 1; g->bitAt[p] = now;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                /* steer follow: the steering hand is the player's hand nearest the creature,
                  * except that the one steering keeps it unless another is
                  * moveKeep nearer. With twoHands, the player's other hand
                  * acts (a pinch bites, a fist sprints) and the steering
@@ -1279,7 +1392,8 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                 gm_dot(&canvas, rp, fill > 0 ? 0.036 * (1 - fill) : 0.034, 0.038, 0.005, gm_alpha(pc, sd->ready ? 1.0f : 0.7f));
                 ca_label(&labels, &L, &M, p, ca_at(&L, p, 0.17, ca_switch_spacing(&L) * 1.3),
                          g->bot[p] ? "Put a hand here\nto play yourself"
-                         : sd->ready ? "Ready! One hand steers,\nthe other: pinch bites, fist sprints" : "Palm here\nwhen ready",
+                         : sd->ready ? c->steerRing ? "Ready! A hand on your ring steers,\nthe other: pinch bites, fist sprints"
+                                         : "Ready! One hand steers,\nthe other: pinch bites, fist sprints" : "Palm here\nwhen ready",
                          c->textHeight * 0.75, gm_rgba(1, 1, 1, 0.85f));
             } else {
                 /* Health and stamina along your end, your creature's name, its state. */
@@ -1298,6 +1412,33 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                 snprintf(buf, sizeof(buf), "%s%s  %d%s%s%s%s", g->bot[p] ? "Computer: " : "", cr->name, (int)round(f->hp),
                          st[0] || edgeNote[0] ? "\n" : "", st, st[0] && edgeNote[0] ? "  " : "", edgeNote);
                 ca_label(&labels, &L, &M, p, ca_at(&L, p, 0.14, 0), buf, c->textHeight * 0.9, ca_hex(cr->glow, 1));
+            }
+        }
+
+        /* steer ring: each player's ring in their colour, brighter with
+         * a hand on it, a knob where the hand is and a line the way it
+         * pushes; a ring of the same colour under the acting hand, full
+         * while it is a fist, a white flash when it bites. */
+        for (int p = 1; c->steerRing && p <= 2; p++) {
+            if (g->bot[p]) { continue; }
+            GmColor pc = gm_player_color(p);
+            double rr = c->ringRadius, since = now - g->bitAt[p];
+            gm_dot(&canvas, ring[p], rr - 0.006, rr, 0.006, gm_alpha(pc, g->stickOn[p] ? 0.95f : 0.45f));
+            gm_dot(&canvas, ring[p], 0, rr * c->ringDeadZone, 0.004, gm_alpha(pc, 0.18f));
+            if (g->stickOn[p] && ct_finite2(g->knob[p])) {
+                double kl = sp_len2(g->knob[p]);
+                SpVec2 k = kl > rr ? sp_scale2(g->knob[p], rr / kl) : g->knob[p];
+                SpVec2 at = sp_add2(ring[p], k);
+                if (kl > rr * c->ringDeadZone) { gm_beam(&canvas, ring[p], at, 0.006, 0.004, 1.0, gm_alpha(pc, 0.7f)); }
+                gm_dot(&canvas, at, 0, 0.018, 0.008, gm_alpha(pc, 0.95f));
+            }
+            if (g->actOn[p] && ct_finite2(g->actAt[p])) {
+                gm_dot(&canvas, g->actAt[p], g->actFist[p] ? 0 : 0.042, 0.048, 0.006, gm_alpha(pc, g->actFist[p] ? 0.55f : 0.85f));
+            }
+            if (since >= 0 && since < 0.3) {
+                SpVec2 at = g->actOn[p] ? g->actAt[p] : sp_add2(ring[p], g->knob[p]);
+                double r = 0.05 + 0.04 * since / 0.3;
+                gm_dot(&canvas, at, r - 0.006, r, 0.006, gm_rgba(1, 1, 1, (float)(0.9 * (1 - since / 0.3))));
             }
         }
 

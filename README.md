@@ -20,10 +20,17 @@ open palm on the ring that says "Palm here". The fight counts down once both pla
 ready.
 
 **Fight.**
-- Your creature runs towards your hand: the one of yours nearest it steers.
-- Your other hand acts. Pinch to bite; the bite aims at the other creature when it's close.
+- Each player has a ring at the bottom long edge, on their side (player 1 on the left).
+  Your hand on your ring is a joystick: push it the way your creature should run, further
+  for faster.
+- Your other hand acts, anywhere on your side. Pinch to bite; the bite aims at the other
+  creature when it's close.
 - Make a fist with it to sprint. How long you can sprint depends on your muscle type.
-- With one hand, it steers and acts. (`twoHands 0` in ARENA_SETTINGS: any of your hands acts.)
+- Rings of your colour show which hand does what. With one hand, the ring's hand steers and acts.
+- Which hand is whose comes from the SDK's controls kit (`kits/controls`): by where each arm
+  comes from, so other people's hands don't drive your creature.
+- `steer follow` in ARENA_SETTINGS brings back the old way: your creature runs towards your
+  hand (the one of yours nearest it), and your other hand acts.
 - Your health and stamina bars run along your end of the table.
 
 **Alone?** With the computer on (`botAfter 3` in ARENA_SETTINGS; it is off by default),

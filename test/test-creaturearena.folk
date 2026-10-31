@@ -6,6 +6,7 @@
 #   a fingertip held on a switch flips that gene;
 #   both palms held on Ready start the countdown;
 #   a hand leads its creature, a pinch bites the other creature;
+#   with the rings, the ring's hand steers and the other hand bites;
 #   coffee, greens and orbs do what each creature's genes say;
 #   the last bite knocks out the other creature and wins;
 #   with the textures, the pictures are drawn from them in one draw.
@@ -92,6 +93,9 @@ $arena startFight
 check {[waitFor {the creature arena is fight with creatures {Sunsniffer Mooncoil} winner 0} 3] ne ""} \
     "the fight is held: [Query! the creature arena is /p/ with creatures /c/ winner /w/]"
 
+# 3-4b: steer follow (your creature runs towards your hand); 4c: the rings.
+$arena setSteer follow
+
 # 3. A hand leads its creature: player 1's palm at the centre, its creature to the left.
 $arena place 1 -250 0 150
 $arena place 2 250 200 150
@@ -133,6 +137,43 @@ removeHand 26; removeHand 27
 check {[lindex [st $arena f2] 2] < $hp} "two hands: the other hand's pinch bites: [st $arena f2]"
 waitForNone {hand 26 has pose /p/} 2
 waitForNone {hand 27 has pose /p/} 2
+
+# 4c. The rings (the default): player 1's ring is at the bottom edge,
+# (0.416, 0.76); a hand on it (its arm from the bottom edge) pushing
+# right runs the creature right. Its pinch doesn't bite while another
+# hand of player 1's acts; that hand's pinch does.
+$arena setSteer ring
+proc handUp {id mode which target} {
+    lassign [vsub {0 0} [wristFor $mode $which {0 0}]] dx dy
+    dict create id $id mode $mode at [list [expr {[lindex $target 0] - $dx}] [expr {[lindex $target 1] - $dy}]] angle 0
+}
+$arena place 1 -250 0 150
+$arena place 2 250 200 150
+feedHands $lib $map $camera [list [handUp 30 open palm {0.416 0.76}]] 10
+feedHands $lib $map $camera [list [handUp 30 open palm {0.486 0.76}]] 40
+removeHand 30
+check {[lindex [st $arena f1] 0] > -150} "rings: the ring's hand pushing right runs the creature right: [st $arena f1]"
+waitForNone {hand 30 has pose /p/} 2
+$arena place 1 -70 0 150
+$arena place 2 70 0 150
+set hp [lindex [st $arena f2] 2]
+set stickOpen [handUp 31 open palm {0.416 0.76}]
+set stickPinch [handUp 31 pinch palm {0.416 0.76}]
+set actOpen [handUp 32 open palm {0.56 0.62}]
+set actPinch [handUp 32 pinch palm {0.56 0.62}]
+feedHands $lib $map $camera [list $stickOpen $actOpen] 15
+feedHands $lib $map $camera [list $stickPinch $actOpen] 15
+check {[lindex [st $arena f2] 2] == $hp} "rings: the ring's hand's pinch doesn't bite: [st $arena f2]"
+$arena place 1 -70 0 150
+$arena place 2 70 0 150
+feedHands $lib $map $camera [list $stickOpen $actOpen] 10
+feedHands $lib $map $camera [list $stickOpen $actPinch] 15
+removeHand 31; removeHand 32
+check {[lindex [st $arena f2] 2] < $hp} "rings: the other hand's pinch bites: [st $arena f2]"
+check {[drawnCount games-dot 2] >= 2} "rings: the rings are drawn"
+waitForNone {hand 31 has pose /p/} 2
+waitForNone {hand 32 has pose /p/} 2
+$arena setSteer follow
 
 # 5. The genes decide the power ups.
 $arena place 1 -300 0 150
