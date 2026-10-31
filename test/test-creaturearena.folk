@@ -197,4 +197,22 @@ check {[dict get $n atlas] >= 6 && [dict get $n floor] >= 1} "with the textures:
 check {[llength [Query! /someone/ wishes the GPU draws pipeline ca-sprite onto canvas /c/ with instances /i/ layer /l/]] == 1} \
     "the pictures are one draw"
 
+# 8. Alone: player 1 is ready, nobody's hands come from player 2's end:
+# the computer plays it, and fights.
+$arena reset 7
+check {[waitFor {the creature arena is pick with creatures /c/ winner 0} 3] ne ""} "back on the pick screen"
+feedHands $lib $map $camera [list [handFrom 1 28 open palm {0.23 0.573}]] 90
+removeHand 28
+set t0 [clock milliseconds]
+while {[st $arena phase] eq "pick" && [clock milliseconds] - $t0 < 6000} { sleep 0.1 }
+check {[st $arena bots] eq {0 1} && [st $arena phase] in {countdown fight}} "the computer takes player 2's end: [st $arena bots] [st $arena phase]"
+check {[waitFor {the creature arena is fight with creatures /c/ winner 0} 4] ne ""} "and the fight starts"
+$arena place 1 -250 0 150
+$arena place 2 250 0 150
+sleep 0.8
+check {[lindex [st $arena f2] 0] < 200} "the computer's creature goes for player 1's: [st $arena f2]"
+set t0 [clock milliseconds]
+while {[lindex [st $arena f1] 2] >= 150 && [clock milliseconds] - $t0 < 6000} { sleep 0.1 }
+check {[lindex [st $arena f1] 2] < 150} "and bites it: [st $arena f1]"
+
 finish

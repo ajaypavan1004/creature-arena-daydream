@@ -15,6 +15,9 @@
 #     at the other creature when it is close), a fist sprints (how long
 #     depends on your muscle type). With one hand, it does both. First
 #     creature to empty the other's health wins.
+#   - Alone: once you're ready, an end that has had no hands for
+#     botAfter s is played by the computer (the browser game's bot.ts);
+#     a hand from that end on the pick screen takes it back.
 #   - Genes decide the power ups, as in the browser game: coffee boosts
 #     a Blaze and gives an Ember the jitters; bitter greens heal a Bold
 #     creature and send a Keen one reeling; an energy orb charges a
@@ -78,6 +81,8 @@ set ARENA_SETTINGS {
     countdown 2.4 koPause 1.3 winnerTime 5
     followDeadzone 15 followFull 90
     twoHands 1 moveKeep 0.08
+    botAfter 3 botReaction {0.16 0.42} botAttackRange 138 botBackOffChance 0.45
+    botBackOffTime {0.35 0.8} botSpeed 0.92 botSeekRange 650 botGrabRange 170 botAvoidMargin 25
     switchReach 0.04 dwellFlip 0.6 readyHold 1.0 readyReach 0.07
     textHeight 0.022
     spriteHeight 205 bobHeight 9 lean 0.1 lungeLean 0.24 hitFlash 0.16
@@ -158,6 +163,10 @@ $cc code {
         double switchReach, dwellFlip, readyHold, readyReach, textHeight;
         double spriteHeight, bobHeight, lean, lungeLean, hitFlash;   /* the pictures (render.ts, config.ts motion) */
         double moveKeep;          /* m: the steering hand keeps its creature unless another is this much nearer */
+        /* The computer (the browser game's bot.ts, CONFIG.bot): it takes a side
+         * nobody's hands have been on for botAfter s once the other is ready. */
+        double botAfter, botReaction[2], botAttackRange, botBackOffChance, botBackOffTime[2];
+        double botSpeed, botSeekRange, botGrabRange, botAvoidMargin;
         int maxOnField, twoHands;
     } CaConfig;
 
@@ -202,6 +211,13 @@ $cc code {
         double spawnIn;
         struct { int id, pinch; double seen; } hand[CA_HANDMEM];
         int moveId[3];            /* each player's steering hand (tracker id), -1 none */
+        int bot[3];               /* the computer plays this side */
+        double alone[3];          /* s on the pick screen with none of this side's hands */
+        struct {
+            double ready, modeT, lastCooldown, reaction;
+            int mode, circleSign;           /* mode: 0 chase, 1 circle, 2 back */
+            struct { double x, y; int side; } avoid[CA_PICKUPS]; int nAvoid;
+        } brain[3];
         GmRandom rnd;
         int published[4];         /* phase, creature 1, creature 2, winner */
     } CaGame;
@@ -232,6 +248,10 @@ $cc code {
         g->spawnIn = c->firstSpawn;
         g->winner = 0;
         g->moveId[1] = g->moveId[2] = -1;
+        for (int p = 1; p <= 2; p++) {
+            memset(&g->brain[p], 0, sizeof(g->brain[p]));
+            g->brain[p].reaction = c->botReaction[1]; g->brain[p].circleSign = 1;
+        }
     }
 
     static void ca_reset(CaGame* g, unsigned long long seed) {
@@ -292,7 +312,7 @@ $cc code {
             f->vx -= f->vx * k; f->vy -= f->vy * k;
         } else {
             if (frozen) { ix = 0; iy = 0; }
-            double top = c->maxSpeed * (f->boost > 0 ? c->boostSpeed : 1)
+            double top = c->maxSpeed * (g->bot[p] ? c->botSpeed : 1) * (f->boost > 0 ? c->boostSpeed : 1)
                        * (f->sprinting ? c->sprintSpeed[g->side[p].genes[4]] : 1);
             double k = 1 - exp(-(il > 0.05 && !frozen ? c->responsiveness : c->friction) * dt);
             f->vx += (ix * top - f->vx) * k;
@@ -454,6 +474,119 @@ $cc code {
                 else { gm_note(notes, 50, 70, 0.4); gm_note(notes, 49, 60, 0.4); }
                 break;
             }
+        }
+    }
+
+    /* ----------------------------------------------------- the computer */
+
+    /* Whether a power up helps side p's creature (sim.ts helps). */
+    static int ca_helps(const CaGame* g, int p, int kind) {
+        const int* genes = g->side[p].genes;
+        return kind == PU_COFFEE ? genes[0] == 0 : kind == PU_GREENS ? genes[2] == 1 : 1;
+    }
+
+    /* The helpful power up worth going for now, or -1 (bot.ts pickTarget);
+     * -2 is the pending one a Keen creature senses. */
+    static int ca_bot_target(const CaGame* g, int p, double foeDist) {
+        const CaConfig* c = &config;
+        const CaFighter* me = &g->f[p]; const CaFighter* foe = &g->f[3 - p];
+        int best = -1; double bestScore = 1e18;
+        int n = g->nPickups + (g->side[p].genes[2] == 0 && g->hasPending ? 1 : 0);
+        for (int i = 0; i < n; i++) {
+            const CaPickup* pu = i < g->nPickups ? &g->pickups[i] : &g->pending;
+            if (!ca_helps(g, p, pu->kind)) { continue; }
+            if (pu->kind == PU_ORB && (me->charged > 0 || me->shield > 0)) { continue; }
+            if (pu->kind == PU_GREENS && me->hp > c->maxHp - c->heal * 0.5) { continue; }
+            double pd = hypot(pu->x - me->x, pu->y - me->y), foeToIt = hypot(pu->x - foe->x, pu->y - foe->y);
+            double score = pd;
+            if (pu->kind == PU_GREENS && me->hp < 50) { score *= 0.5; }
+            if (foeToIt < pd * 0.6 && ca_helps(g, 3 - p, pu->kind)) { score *= 0.8; }
+            if (score < bestScore) { best = i < g->nPickups ? i : -2; bestScore = score; }
+        }
+        if (best != -1 && foeDist < c->botAttackRange * 1.2 && bestScore > c->botGrabRange) { return -1; }
+        return best != -1 && bestScore < c->botSeekRange ? best : -1;
+    }
+
+    /* The computer plays side p for this step (bot.ts think): it chases
+     * and bites like a player, knows its genes (goes for the power ups
+     * that help it, steers round the ones that hurt it), presses its
+     * time of day, punishes a jittery or reeling foe, and backs off or
+     * circles after a swing now and then. */
+    static void ca_bot_think(CaGame* g, int p, double dt) {
+        const CaConfig* c = &config;
+        CaFighter* me = &g->f[p]; const CaFighter* foe = &g->f[3 - p];
+        __typeof__(g->brain[0])* b = &g->brain[p];
+        double dx = foe->x - me->x, dy = foe->y - me->y, d = hypot(dx, dy);
+        if (d < 1e-6) { d = 1; }
+        double tx = dx / d, ty = dy / d;
+        int strong = ca_time_edge(g, p), weak = ca_time_edge(g, 3 - p) && !strong;
+        int helpless = foe->jitter > 0 || foe->bitter > 0;
+
+        double backOff = helpless ? 0 : c->botBackOffChance * (strong ? 0.5 : weak ? 1.5 : 1);
+        if (me->cooldown > b->lastCooldown && gm_random(&g->rnd) < backOff) {
+            b->mode = gm_random(&g->rnd) < 0.5 ? 2 : 1;
+            b->modeT = c->botBackOffTime[0] + gm_random(&g->rnd) * (c->botBackOffTime[1] - c->botBackOffTime[0]);
+            b->circleSign = gm_random(&g->rnd) < 0.5 ? 1 : -1;
+        }
+        b->lastCooldown = me->cooldown;
+        b->modeT -= dt;
+        if (b->modeT <= 0) { b->mode = 0; }
+
+        double reach = c->botAttackRange + (me->charged > 0 ? c->dashRange : 0);
+        double ix, iy;
+        int t = ca_bot_target(g, p, d);
+        const CaPickup* target = t >= 0 ? &g->pickups[t] : t == -2 ? &g->pending : NULL;
+        if (target && !helpless) {
+            double px = target->x - me->x, py = target->y - me->y, pd = hypot(px, py);
+            if (pd < 1e-6) { pd = 1; }
+            ix = px / pd; iy = py / pd;
+        } else if (b->mode == 2 && !helpless) { ix = -tx * 0.8 - ty * 0.4 * b->circleSign; iy = -ty * 0.8 + tx * 0.4 * b->circleSign; }
+        else if (b->mode == 1 && !helpless) { ix = -ty * b->circleSign + tx * 0.25; iy = tx * b->circleSign + ty * 0.25; }
+        else if (d > reach * 0.8) { ix = tx; iy = ty; }
+        else { ix = tx * 0.2; iy = ty * 0.2; }
+
+        /* Steer round the power ups that would hurt it, one side per power up. */
+        for (int i = 0; i < g->nPickups; i++) {
+            const CaPickup* pu = &g->pickups[i];
+            if (ca_helps(g, p, pu->kind)) { continue; }
+            double ax = me->x - pu->x, ay = me->y - pu->y, ad = hypot(ax, ay);
+            if (ad < 1e-6) { ad = 1; }
+            double keepOff = ca_grab_reach(g, p) + c->botAvoidMargin;
+            if (ad >= keepOff + 60) { continue; }
+            double push = (keepOff + 60 - ad) / 60 * 2, rx = ax / ad, ry = ay / ad;
+            if (ix * rx + iy * ry < 0) {
+                int side = 0;
+                for (int k = 0; k < b->nAvoid; k++) {
+                    if (fabs(b->avoid[k].x - pu->x) < 1 && fabs(b->avoid[k].y - pu->y) < 1) { side = b->avoid[k].side; }
+                }
+                if (!side) {
+                    double cross = ix * ry - iy * rx;
+                    side = fabs(cross) > 0.05 ? (cross > 0 ? 1 : -1) : b->circleSign;
+                    if (b->nAvoid == CA_PICKUPS) { memmove(b->avoid, b->avoid + 1, sizeof(b->avoid[0]) * (CA_PICKUPS - 1)); b->nAvoid--; }
+                    b->avoid[b->nAvoid].x = pu->x; b->avoid[b->nAvoid].y = pu->y; b->avoid[b->nAvoid].side = side; b->nAvoid++;
+                }
+                ix += -ry * side * push; iy += rx * side * push;
+            }
+            ix += rx * push * 0.6; iy += ry * push * 0.6;
+        }
+
+        /* Stay off the glowing edge. */
+        double r = hypot(me->x, me->y), edge = 520 * 0.78;
+        if (r > edge) { double push = (r - edge) / (520 - edge); ix -= me->x / r * push * 1.5; iy -= me->y / r * push * 1.5; }
+        me->intent = sp_v2(ix, iy);
+
+        /* Sprint to reach a power up or close a big gap, and to get away when backing off. */
+        int muscle = g->side[p].genes[4];
+        double reserve = muscle == 0 ? 0.55 : muscle == 1 ? 0.4 : 0.25;
+        int far = target ? hypot(target->x - me->x, target->y - me->y) > 180 : d > 300;
+        me->sprintHeld = (me->stamina > reserve && (far || (b->mode == 2 && weak))) || (me->sprinting && me->stamina > 0.05 && far);
+
+        /* Bite once the foe has been in range for the reaction time (a shield is worth popping). */
+        if (d <= reach && foe->hp > 0) { b->ready += dt * (helpless ? 2 : 1); } else { b->ready = 0; }
+        if (b->ready >= b->reaction && me->cooldown <= 0 && me->stun <= 0) {
+            me->attackPressed = 1;
+            b->ready = 0;
+            b->reaction = c->botReaction[0] + gm_random(&g->rnd) * (c->botReaction[1] - c->botReaction[0]);
         }
     }
 
@@ -725,6 +858,18 @@ $cc proc configure {Jim_Obj* settings} void {
     #undef SET
     c.maxOnField = gm_jim_int(interp, settings, "maxOnField", 3);
     c.twoHands = gm_jim_int(interp, settings, "twoHands", 1);
+    sp_jim_dict_double(interp, settings, "botAfter", 0, 0, &c.botAfter);
+    sp_jim_dict_double(interp, settings, "botAttackRange", 0, 0, &c.botAttackRange);
+    sp_jim_dict_double(interp, settings, "botBackOffChance", 0, 0, &c.botBackOffChance);
+    sp_jim_dict_double(interp, settings, "botSpeed", 0, 0, &c.botSpeed);
+    sp_jim_dict_double(interp, settings, "botSeekRange", 0, 0, &c.botSeekRange);
+    sp_jim_dict_double(interp, settings, "botGrabRange", 0, 0, &c.botGrabRange);
+    sp_jim_dict_double(interp, settings, "botAvoidMargin", 0, 0, &c.botAvoidMargin);
+    Jim_Obj* br = sp_jim_dict_get(interp, settings, "botReaction");
+    Jim_Obj* bb = sp_jim_dict_get(interp, settings, "botBackOffTime");
+    if (!br || !sp_jim_doubles(interp, br, c.botReaction, 2) || !bb || !sp_jim_doubles(interp, bb, c.botBackOffTime, 2)) {
+        FOLK_ERROR("creaturearena: botReaction and botBackOffTime need 2 numbers each");
+    }
     int fromEnds = gm_jim_int(interp, settings, "picturesFromEnds", 0);
     Jim_Obj* sp = sp_jim_dict_get(interp, settings, "sprintSpeed");
     Jim_Obj* dr = sp_jim_dict_get(interp, settings, "sprintDrain");
@@ -797,6 +942,9 @@ $cc proc state {} Jim_Obj* {
     sp_jim_put(interp, r, "phase", Jim_NewStringObj(interp, PHASE_NAMES[g.phase], -1));
     sp_jim_put(interp, r, "winner", Jim_NewIntObj(interp, g.winner));
     sp_jim_put(interp, r, "night", Jim_NewIntObj(interp, g.night));
+    Jim_Obj* bots = Jim_NewListObj(interp, NULL, 0);
+    for (int p = 1; p <= 2; p++) { Jim_ListAppendElement(interp, bots, Jim_NewIntObj(interp, g.bot[p])); }
+    sp_jim_put(interp, r, "bots", bots);
     Jim_Obj* names = Jim_NewListObj(interp, NULL, 0);
     for (int p = 1; p <= 2; p++) {
         Jim_ListAppendElement(interp, names, Jim_NewStringObj(interp, CREATURES[ca_creature(&g.side[p])].name, -1));
@@ -876,8 +1024,29 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
 
         /* ----- pick: switches and Ready ----- */
         if (g->phase == PH_PICK) {
+            /* The computer takes a side that has had none of its hands on
+             * the table for botAfter s once the other side is ready, and
+             * gives it back as soon as a hand comes from that side. */
+            for (int p = 1; p <= 2; p++) {
+                int any = 0;
+                for (int k = 0; k < nh; k++) { if (owner[k] == p) { any = 1; } }
+                if (any) {
+                    if (g->bot[p]) { g->bot[p] = 0; g->side[p].ready = 0; g->side[p].readyP = 0; }
+                    g->alone[p] = 0;
+                } else { g->alone[p] += dt; }
+            }
             for (int p = 1; p <= 2; p++) {
                 CaSide* sd = &g->side[p];
+                if (!g->bot[p] && !g->bot[3 - p] && g->side[3 - p].ready && g->alone[p] >= c->botAfter) {
+                    g->bot[p] = 1;
+                    for (int i = 0; i < 5; i++) { sd->genes[i] = (int)(gm_random(&g->rnd) * GENE_OPTIONS[i]) % GENE_OPTIONS[i]; }
+                    gm_note(&notes, 55, 60, 0.3);
+                }
+                if (g->bot[p]) { sd->ready = 1; sd->readyP = 1; }
+            }
+            for (int p = 1; p <= 2; p++) {
+                CaSide* sd = &g->side[p];
+                if (g->bot[p]) { continue; }
                 for (int i = 0; i < 5; i++) {
                     SpVec2 at = ca_switch_at(&L, p, i);
                     int touched = 0, pinched = 0;
@@ -936,6 +1105,10 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
             for (int p = 1; p <= 2; p++) {
                 CaFighter* f = &g->f[p];
                 f->intent = sp_v2(0, 0); f->sprintHeld = 0; f->hasHand = 0;
+                if (g->bot[p]) {
+                    if (g->phase == PH_FIGHT) { ca_bot_think(g, p, h); }
+                    continue;
+                }
                 /* The steering hand: the player's hand nearest the creature,
                  * except that the one steering keeps it unless another is
                  * moveKeep nearer. With twoHands, the player's other hand
@@ -1070,7 +1243,7 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                 }
                 /* One label: the creature and its genes, in the switches' order
                  * (one text draw, not six: each draw costs the GPU). */
-                snprintf(buf, sizeof(buf), "%s\n%s  %s  %s  %s  %s", cr->name,
+                snprintf(buf, sizeof(buf), "%s%s\n%s  %s  %s  %s  %s", g->bot[p] ? "Computer: " : "", cr->name,
                          GENE_NAMES[0][sd->genes[0]], GENE_NAMES[1][sd->genes[1]], GENE_NAMES[2][sd->genes[2]],
                          GENE_NAMES[3][sd->genes[3]], GENE_NAMES[4][sd->genes[4]]);
                 ca_label(&labels, &L, &M, p, ca_at(&L, p, 0.045, 0), buf, c->textHeight * 0.85, ca_hex(cr->glow, 1));
@@ -1079,7 +1252,9 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                 double fill = sd->ready ? 1 : sd->readyP;
                 gm_dot(&canvas, rp, fill > 0 ? 0.036 * (1 - fill) : 0.034, 0.038, 0.005, gm_alpha(pc, sd->ready ? 1.0f : 0.7f));
                 ca_label(&labels, &L, &M, p, ca_at(&L, p, 0.17, ca_switch_spacing(&L) * 1.3),
-                         sd->ready ? "Ready! One hand steers,\nthe other: pinch bites, fist sprints" : "Palm here\nwhen ready", c->textHeight * 0.75, gm_rgba(1, 1, 1, 0.85f));
+                         g->bot[p] ? "Put a hand here\nto play yourself"
+                         : sd->ready ? "Ready! One hand steers,\nthe other: pinch bites, fist sprints" : "Palm here\nwhen ready",
+                         c->textHeight * 0.75, gm_rgba(1, 1, 1, 0.85f));
             } else {
                 /* Health and stamina along your end, your creature's name, its state. */
                 CaFighter* f = &g->f[p];
@@ -1094,7 +1269,7 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
                                : f->shield > 0 ? "Shield up" : f->boost > 0 ? "Coffee rush" : f->winded ? "Winded" : "";
                 const char* edgeNote = g->phase == PH_FIGHT && ca_time_edge(g, p) ? (dusk ? "Night bite +40%" : "Day bite +40%") : "";
                 /* One label a player: name and health, then what is happening to it. */
-                snprintf(buf, sizeof(buf), "%s  %d%s%s%s%s", cr->name, (int)round(f->hp),
+                snprintf(buf, sizeof(buf), "%s%s  %d%s%s%s%s", g->bot[p] ? "Computer: " : "", cr->name, (int)round(f->hp),
                          st[0] || edgeNote[0] ? "\n" : "", st, st[0] && edgeNote[0] ? "  " : "", edgeNote);
                 ca_label(&labels, &L, &M, p, ca_at(&L, p, 0.14, 0), buf, c->textHeight * 0.9, ca_hex(cr->glow, 1));
             }

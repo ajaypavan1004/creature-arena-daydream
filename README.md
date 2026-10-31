@@ -26,6 +26,11 @@ ready.
 - With one hand, it steers and acts. (`twoHands 0` in ARENA_SETTINGS: any of your hands acts.)
 - Your health and stamina bars run along your end of the table.
 
+**Alone?** Get ready, and if no hands come from the other end for 3 seconds, the computer
+plays it (the browser game's bot: it knows its genes, goes for the power ups that help it,
+steers round the ones that hurt it, presses its time of day). Put a hand at that end on the
+pick screen to take it back.
+
 The first creature to empty the other's health wins. After the win the table goes back to
 the pick screen, keeping both players' choices.
 
