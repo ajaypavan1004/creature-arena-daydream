@@ -20,7 +20,8 @@ open palm on the ring that says "Palm here". The fight counts down once both pla
 ready.
 
 **Fight.**
-- Each player has a ring at the bottom long edge, on their side (player 1 on the left).
+- Each player has a ring at the bottom long edge, beside the arena on their side (player 1 on
+  the left), from the countdown on.
   Your hand on your ring is a joystick: push it the way your creature should run, further
   for faster.
 - Your other hand acts, anywhere on your side. Pinch to bite; the bite aims at the other

@@ -675,14 +675,15 @@ $cc code {
     static SpVec2 ca_preview_at(const CaLayout* L, int p) { return ca_at(L, p, 0.23, -ca_switch_spacing(L) * 1.1); }
 
     /* Player p's ring (steer ring): at the bottom long edge, player 1 on
-     * the left, clear of the arena's circle but as near the middle as
-     * that allows (the middle is easiest to reach); `anchor`: where they
-     * stand, on the edge below it. */
+     * the left, beside the stone floor's picture (a square 546/520 of
+     * the arena's radius to each side) with ringGap to spare, but no
+     * further out than that (the middle is easiest to reach); `anchor`:
+     * where they stand, on the edge below it. */
     static SpVec2 ca_ring_at(const CaLayout* L, const CaConfig* c, int p, SpVec2* anchor) {
         double d = L->halfEdge - c->ringInset;
-        double chord = d < L->R ? sqrt(L->R * L->R - d * d) : 0;
+        double floorHalf = L->R * 546.0 / 520.0;
         double halfLong = sp_dist2(L->mid[1], L->mid[2]) / 2;
-        double across = fmax(0.1, fmin(halfLong - 0.33, chord + c->ringRadius + c->ringGap)) * (p == 1 ? -1 : 1);
+        double across = fmax(0.1, fmin(halfLong - c->ringRadius - 0.02, floorHalf + c->ringRadius + c->ringGap)) * (p == 1 ? -1 : 1);
         SpVec2 side = sp_add2(L->centre, sp_scale2(L->rt, across));
         if (anchor) { *anchor = sp_sub2(side, sp_scale2(L->up, L->halfEdge)); }
         return sp_sub2(side, sp_scale2(L->up, d));
@@ -1415,11 +1416,12 @@ $cc proc step {double now Jim_Obj* map Jim_Obj* poses
             }
         }
 
-        /* steer ring: each player's ring in their colour, brighter with
+        /* steer ring (from the countdown on, so the pick screen stays
+         * clear): each player's ring in their colour, brighter with
          * a hand on it, a knob where the hand is and a line the way it
          * pushes; a ring of the same colour under the acting hand, full
          * while it is a fist, a white flash when it bites. */
-        for (int p = 1; c->steerRing && p <= 2; p++) {
+        for (int p = 1; c->steerRing && g->phase != PH_PICK && p <= 2; p++) {
             if (g->bot[p]) { continue; }
             GmColor pc = gm_player_color(p);
             double rr = c->ringRadius, since = now - g->bitAt[p];

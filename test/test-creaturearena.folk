@@ -139,7 +139,7 @@ waitForNone {hand 26 has pose /p/} 2
 waitForNone {hand 27 has pose /p/} 2
 
 # 4c. The rings (the default): player 1's ring is at the bottom edge,
-# (0.416, 0.76); a hand on it (its arm from the bottom edge) pushing
+# (0.219, 0.76); a hand on it (its arm from the bottom edge) pushing
 # right runs the creature right. Its pinch doesn't bite while another
 # hand of player 1's acts; that hand's pinch does.
 $arena setSteer ring
@@ -149,18 +149,18 @@ proc handUp {id mode which target} {
 }
 $arena place 1 -250 0 150
 $arena place 2 250 200 150
-feedHands $lib $map $camera [list [handUp 30 open palm {0.416 0.76}]] 10
-feedHands $lib $map $camera [list [handUp 30 open palm {0.486 0.76}]] 40
+feedHands $lib $map $camera [list [handUp 30 open palm {0.219 0.76}]] 10
+feedHands $lib $map $camera [list [handUp 30 open palm {0.289 0.76}]] 40
 removeHand 30
 check {[lindex [st $arena f1] 0] > -150} "rings: the ring's hand pushing right runs the creature right: [st $arena f1]"
 waitForNone {hand 30 has pose /p/} 2
 $arena place 1 -70 0 150
 $arena place 2 70 0 150
 set hp [lindex [st $arena f2] 2]
-set stickOpen [handUp 31 open palm {0.416 0.76}]
-set stickPinch [handUp 31 pinch palm {0.416 0.76}]
-set actOpen [handUp 32 open palm {0.56 0.62}]
-set actPinch [handUp 32 pinch palm {0.56 0.62}]
+set stickOpen [handUp 31 open palm {0.219 0.76}]
+set stickPinch [handUp 31 pinch palm {0.219 0.76}]
+set actOpen [handUp 32 open palm {0.36 0.62}]
+set actPinch [handUp 32 pinch palm {0.36 0.62}]
 feedHands $lib $map $camera [list $stickOpen $actOpen] 15
 feedHands $lib $map $camera [list $stickPinch $actOpen] 15
 check {[lindex [st $arena f2] 2] == $hp} "rings: the ring's hand's pinch doesn't bite: [st $arena f2]"
