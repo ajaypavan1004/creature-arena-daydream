@@ -888,59 +888,54 @@ When dnahelix is wanted &\
     }
 }
 
-# The labels, drawn while they are held (and it is shown): once, into a
-# canvas of their own around them, which the display composites every
-# frame as one draw. (Drawn straight onto the display, each letter was a
-# draw of its own on every frame: ~200 a frame, the most of what DNA
-# Helix cost the table. The canvas is redrawn only when a label
-# changes.)
+# The labels, drawn while they are held (and it is shown): each once,
+# into a small canvas of its own just around it, which the display
+# composites every frame as one draw. (Drawn straight onto the display,
+# each letter was a draw of its own on every frame: ~200 a frame, the
+# most of what DNA Helix cost the table. One canvas round all of them
+# was 3648x1472 px, and compositing that every frame cost the GPU ~7 ms:
+# 30 fps. A canvas is redrawn only when its label changes.)
 When dnahelix is wanted & the dna helix labels on /display/ are /labels/ &\
      /display/ has canvas /dispCanvas/ with /...dispOptions/ &\
      /display/ has canvas projection /dispS2c/ {
-    # The labels' box in the display canvas's pixels, roomy (a letter is
-    # at most ~0.6 of its height wide; a rotated label fits in the circle
-    # round its box), snapped so that a changed letter keeps the canvas.
-    set x0 1e9; set y0 1e9; set x1 -1e9; set y1 -1e9
-    foreach label $labels {
-        lassign $label position radians scale text
-        lassign $position x y
-        set lines [split $text "\n"]
-        # (Jim's expr has no min or max.)
-        set chars [lindex [lsort -integer -decreasing [lmap l $lines { string length $l }]] 0]
-        set wl [expr {$chars * $scale * 0.62}]; set hl [expr {[llength $lines] * $scale * 1.25}]
-        set r [expr {0.5 * sqrt($wl * $wl + $hl * $hl) + 8}]
-        if {$x - $r < $x0} { set x0 [expr {$x - $r}] }
-        if {$x + $r > $x1} { set x1 [expr {$x + $r}] }
-        if {$y - $r < $y0} { set y0 [expr {$y - $r}] }
-        if {$y + $r > $y1} { set y1 [expr {$y + $r}] }
-    }
-    if {$x1 <= $x0} { return }
     set dw [dict get $dispOptions width]; set dh [dict get $dispOptions height]
-    set x0 [expr {int(floor($x0 / 64.0)) * 64}]; set y0 [expr {int(floor($y0 / 64.0)) * 64}]
-    set x1 [expr {int(ceil($x1 / 64.0)) * 64}]; set y1 [expr {int(ceil($y1 / 64.0)) * 64}]
-    if {$x0 < 0} { set x0 0 }
-    if {$y0 < 0} { set y0 0 }
-    if {$x1 > $dw} { set x1 $dw }
-    if {$y1 > $dh} { set y1 $dh }
-    set w [expr {$x1 - $x0}]; set h [expr {$y1 - $y0}]
-    if {$w < 8 || $h < 8} { return }
+    set i 0
+    foreach label $labels {
+        lassign $label position radians scale text color
+        lassign $position x y
+        # The label's box in the display canvas's pixels: its text (a
+        # letter at most ~0.6 of its height wide), turned by `radians`,
+        # snapped so that a changed letter mostly keeps the canvas.
+        # (Jim's expr has no min or max.)
+        set lines [split $text "\n"]
+        set chars [lindex [lsort -integer -decreasing [lmap l $lines { string length $l }]] 0]
+        set wl [expr {$chars * $scale * 0.62 + 12}]; set hl [expr {[llength $lines] * $scale * 1.3 + 12}]
+        set ca [expr {abs(cos($radians))}]; set sa [expr {abs(sin($radians))}]
+        set bw [expr {$wl * $ca + $hl * $sa}]; set bh [expr {$wl * $sa + $hl * $ca}]
+        set x0 [expr {int(floor(($x - $bw / 2) / 16.0)) * 16}]; set y0 [expr {int(floor(($y - $bh / 2) / 16.0)) * 16}]
+        set x1 [expr {int(ceil(($x + $bw / 2) / 16.0)) * 16}]; set y1 [expr {int(ceil(($y + $bh / 2) / 16.0)) * 16}]
+        if {$x0 < 0} { set x0 0 }
+        if {$y0 < 0} { set y0 0 }
+        if {$x1 > $dw} { set x1 $dw }
+        if {$y1 > $dh} { set y1 $dh }
+        set w [expr {$x1 - $x0}]; set h [expr {$y1 - $y0}]
+        incr i
+        if {$w < 8 || $h < 8} { continue }
 
-    set id [list $display dnahelix-labels $w $h]
-    Wish the GPU creates canvas $id with width $w height $h settle 20ms
-    When the GPU has created canvas $id with /...opts/ {
-        # Text draws onto anything that has a canvas and a projection:
-        # this canvas, in the display canvas's pixels.
-        Claim $id has canvas $id with width $w height $h
-        Claim $id has canvas projection [list [list [expr {2.0 / $w}] 0 [expr {-1.0 - 2.0 * $x0 / $w}]] \
-                                              [list 0 [expr {2.0 / $h}] [expr {-1.0 - 2.0 * $y0 / $h}]] {0 0 1}]
-        foreach label $labels {
-            lassign $label position radians scale text color
+        set id [list $display dnahelix-label $i $x0 $y0 $w $h]
+        Wish the GPU creates canvas $id with width $w height $h settle 20ms
+        When the GPU has created canvas $id with /...opts/ {
+            # Text draws onto anything that has a canvas and a projection:
+            # this canvas, in the display canvas's pixels.
+            Claim $id has canvas $id with width $w height $h
+            Claim $id has canvas projection [list [list [expr {2.0 / $w}] 0 [expr {-1.0 - 2.0 * $x0 / $w}]] \
+                                                  [list 0 [expr {2.0 / $h}] [expr {-1.0 - 2.0 * $y0 / $h}]] {0 0 1}]
             Wish to draw text onto $id with position $position text $text \
                 scale $scale radians $radians color $color anchor center layer 0
+            Wish the GPU draws pipeline "composite-canvas" onto canvas $dispCanvas with instances \
+                [list [list [list $dw $dh] $dispS2c [dict get $opts texture] \
+                           [list $x0 $y0] [list $x1 $y0] [list $x1 $y1] [list $x0 $y1]]] \
+                layer $HELIX_TEXT_LAYER
         }
-        Wish the GPU draws pipeline "composite-canvas" onto canvas $dispCanvas with instances \
-            [list [list [list $dw $dh] $dispS2c [dict get $opts texture] \
-                       [list $x0 $y0] [list $x1 $y0] [list $x1 $y1] [list $x0 $y1]]] \
-            layer $HELIX_TEXT_LAYER
     }
 }
